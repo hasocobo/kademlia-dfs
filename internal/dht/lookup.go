@@ -2,7 +2,6 @@ package dht
 
 import (
 	"sync"
-	"time"
 )
 
 // LookupResult represents the result of a lookup operation

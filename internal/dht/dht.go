@@ -3,7 +3,6 @@ package dht
 import (
 	"errors"
 	"math/rand"
-	"time"
 )
 
 // DHT represents the main Kademlia DHT structure
