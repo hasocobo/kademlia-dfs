@@ -1,7 +1,21 @@
 package main
 
-import "fmt"
+import (
+	"crypto/sha1"
+	"fmt"
+)
+
+type NodeId [20]byte
+
+func NewNodeId(name string) NodeId {
+	return sha1.Sum([]byte(name)) // Returns 20 byte hash
+}
+
+func (nodeId NodeId) String() string {
+	return string(nodeId[:]) // ":" is needed for arrays, it means from beginning to end
+}
 
 func main() {
-	fmt.Println("Hello, World!")
+	node := NewNodeId("test")
+	fmt.Printf("%s", node.String())
 }
