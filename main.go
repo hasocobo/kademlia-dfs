@@ -12,10 +12,22 @@ func NewNodeId(name string) NodeId {
 }
 
 func (nodeId NodeId) String() string {
-	return string(nodeId[:]) // ":" is needed for arrays, it means from beginning to end
+	return string(nodeId[:]) // ":" is needed for arrays, it means "from beginning to end"
+}
+
+func xorDistance(a, b NodeId) int {
+	dist := 0
+	for i := 0; i < len(a); i++ {
+		dist += int(a[i] ^ b[i])
+	}
+
+	return dist
 }
 
 func main() {
-	node := NewNodeId("test")
-	fmt.Printf("%s", node.String())
+	n1 := NewNodeId("testa")
+	n2 := NewNodeId("testb")
+	fmt.Println(n1.String())
+	fmt.Println(n2.String())
+	fmt.Println(xorDistance(n1, n2))
 }
