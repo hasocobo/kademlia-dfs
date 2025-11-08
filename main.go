@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"math/big"
 	"net"
-	"sort"
 	"strconv"
 	"sync"
 )
@@ -84,6 +83,30 @@ func (rt *RoutingTable) Update(c Contact) {
 	bucket.Contacts.PushFront(c)
 }
 
+func (rt *RoutingTable) Print() {
+	for i, bucket := range rt.Buckets {
+		bucket.mu.RLock() // Read lock
+
+		// Skip empty buckets for cleaner output
+		if bucket.Contacts.Len() == 0 {
+			bucket.mu.RUnlock()
+			continue
+		}
+
+		fmt.Printf("Bucket %d (%d contacts):\n", i, bucket.Contacts.Len())
+
+		// Iterate through the actual list elements
+		for e := bucket.Contacts.Front(); e != nil; e = e.Next() {
+			contact := e.Value.(Contact)
+			fmt.Printf("  ID: %s, IP: %s, Port: %d\n",
+				contact.ID.String()[:8]+"...", // First 8 chars of hash
+				contact.IP,
+				contact.Port)
+		}
+
+		bucket.mu.RUnlock()
+	}
+}
 func (rt *RoutingTable) GetBucketIndex(selfID, otherID NodeId) int {
 	dist := xorDistance(selfID, otherID)
 
@@ -133,24 +156,31 @@ func (cs ContactSorter) Print() {
 }
 
 func main() {
-	var contacts []Contact
+
+	selfID := NewNodeId("test")
+	rt := NewRoutingTable(selfID)
+
+	rt.Print()
 
 	for i := range 10 {
-		contacts = append(contacts,
-			Contact{ID: NewNodeId("test " + strconv.Itoa(i)), IP: net.IPv4zero, Port: 10000 + i})
+		rt.Update(Contact{ID: NewNodeId("test " + strconv.Itoa(i)), IP: net.IPv4zero, Port: 10000 + i})
 	}
 
-	contactTable := &ContactSorter{
-		TargetID: NewNodeId("test"),
-		Contacts: contacts,
+	fmt.Println("After 10 Contacts")
+
+	rt.Print()
+
+	for i := range 100 {
+		rt.Update(Contact{ID: NewNodeId("test " + strconv.Itoa(i)), IP: net.IPv4zero, Port: 10000 + i})
 	}
 
-	contactTable.Print()
+	fmt.Println("After 110 Contacts")
+	rt.Print()
 
-	fmt.Println()
+	for i := range 10000 {
+		rt.Update(Contact{ID: NewNodeId("test " + strconv.Itoa(i)), IP: net.IPv4zero, Port: 10000 + i})
+	}
 
-	sort.Sort(contactTable)
-
-	contactTable.Print()
-
+	fmt.Println("After 10110 Contacts")
+	rt.Print()
 }
