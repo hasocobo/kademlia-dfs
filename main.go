@@ -49,6 +49,21 @@ func (cs ContactSorter) Less(i, j int) bool {
 	return distI.Cmp(distJ) == -1
 }
 
+// To determine what bucket the target node belongs to, we need to get the index of the distance (value we get after applying xorDistance),
+//
+// i.e, 010001 means it belongs to the 5th bucket(read from right to left, least significant bit is at the most right)
+//
+// So if we calculate it with log_2, we get the index.
+//
+// But since sha1 is 160-bit length, we can't use math.log2 because it accepts numbers with 64 bit,
+//
+// So we have to use big.Int.BitLen which does the same thing on larger numbers
+func getBucketIndex(selfID NodeId, otherID NodeId) int {
+	dist := xorDistance(selfID, otherID)
+
+	return dist.BitLen()
+}
+
 func (cs ContactSorter) Print() {
 	for _, v := range cs.Contacts {
 		fmt.Println("Contact: ", v, "Distance: ", xorDistance(v.ID, cs.TargetID))
