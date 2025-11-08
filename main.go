@@ -1,6 +1,7 @@
 package main
 
 import (
+	"container/list"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -8,6 +9,7 @@ import (
 	"net"
 	"sort"
 	"strconv"
+	"sync"
 )
 
 /*
@@ -19,6 +21,7 @@ SHA-256 is much stronger, with no known practical collision or preimage attacks,
 */
 const (
 	idLength = 32
+	k        = 32
 )
 
 type NodeId [idLength]byte
@@ -41,6 +44,59 @@ type Contact struct {
 	ID   NodeId
 	IP   net.IP
 	Port int
+}
+
+type Bucket struct {
+	// Using list.List(linked-list) for LRU management and efficient insertion/deletion
+	// We use []Contact slices(array-list) when sorting for lookups
+	Contacts *list.List
+	mu       sync.RWMutex
+}
+
+type RoutingTable struct {
+	Buckets [idLength * 8]Bucket
+	SelfID  NodeId
+}
+
+func (rt *RoutingTable) Update(c Contact) {
+	idx := rt.GetBucketIndex(rt.SelfID, c.ID)
+	bucket := &rt.Buckets[idx]
+
+	bucket.mu.Lock()
+	defer bucket.mu.Unlock()
+	// move to front if the contact exists, add to contacts if not
+	for e := bucket.Contacts.Front(); e != nil; e = e.Next() {
+		if e.Value.(Contact).ID == c.ID {
+			bucket.Contacts.MoveToFront(e)
+			return
+		}
+	}
+	// if it's a new contact and the bucket is full
+	if bucket.Contacts.Len() == k {
+		// TODO: call ping to the least recently used, i.e. last, element
+		// and move to front if returns true for ping but accept false for now
+		lruElem := bucket.Contacts.Back()
+		bucket.Contacts.Remove(lruElem)
+		bucket.Contacts.PushFront(c)
+		return
+	}
+
+	bucket.Contacts.PushFront(c)
+}
+
+func (rt *RoutingTable) GetBucketIndex(selfID, otherID NodeId) int {
+	dist := xorDistance(selfID, otherID)
+
+	return dist.BitLen() - 1
+}
+
+func NewRoutingTable(selfID NodeId) *RoutingTable {
+	rt := &RoutingTable{SelfID: selfID}
+
+	for i := range len(rt.Buckets) {
+		rt.Buckets[i].Contacts = list.New()
+	}
+	return rt
 }
 
 type ContactSorter struct {
@@ -69,16 +125,10 @@ func (cs ContactSorter) Less(i, j int) bool {
 // But since sha1 is 160-bit length, we can't use math.log2 because it accepts numbers with 64 bit,
 //
 // So we have to use big.Int.BitLen which does the same thing on larger numbers
-func getBucketIndex(selfID, otherID NodeId) int {
-	dist := xorDistance(selfID, otherID)
-
-	return dist.BitLen() - 1
-}
 
 func (cs ContactSorter) Print() {
 	for _, v := range cs.Contacts {
 		fmt.Println("Contact: ", v, "Distance: ", xorDistance(v.ID, cs.TargetID))
-		fmt.Println("Target belongs to bucket ", getBucketIndex(v.ID, cs.TargetID))
 	}
 }
 
