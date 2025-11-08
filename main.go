@@ -58,15 +58,16 @@ func (cs ContactSorter) Less(i, j int) bool {
 // But since sha1 is 160-bit length, we can't use math.log2 because it accepts numbers with 64 bit,
 //
 // So we have to use big.Int.BitLen which does the same thing on larger numbers
-func getBucketIndex(selfID NodeId, otherID NodeId) int {
+func getBucketIndex(selfID, otherID NodeId) int {
 	dist := xorDistance(selfID, otherID)
 
-	return dist.BitLen()
+	return dist.BitLen() - 1
 }
 
 func (cs ContactSorter) Print() {
 	for _, v := range cs.Contacts {
 		fmt.Println("Contact: ", v, "Distance: ", xorDistance(v.ID, cs.TargetID))
+		fmt.Println("Target belongs to bucket ", getBucketIndex(v.ID, cs.TargetID))
 	}
 }
 
@@ -90,4 +91,5 @@ func main() {
 	sort.Sort(contactTable)
 
 	contactTable.Print()
+
 }
