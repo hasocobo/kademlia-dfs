@@ -1,7 +1,7 @@
 package main
 
 import (
-	"crypto/sha1"
+	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
 	"math/big"
@@ -10,10 +10,21 @@ import (
 	"strconv"
 )
 
-type NodeId [20]byte
+/*
+We use idLength = 32 to match the 32 bytes produced by SHA-256 hashes.
+SHA-256 is preferred over SHA-1 for new Kademlia implementations because SHA-1 is now considered cryptographically broken—
+practical collision attacks have been demonstrated against SHA-1, meaning two different inputs can be crafted to produce the same SHA-1 hash.
+This makes the identifier space vulnerable to attacks and undermines the security of the DHT.
+SHA-256 is much stronger, with no known practical collision or preimage attacks, it is a safer choice for node identifiers.
+*/
+const (
+	idLength = 32
+)
+
+type NodeId [idLength]byte
 
 func NewNodeId(name string) NodeId {
-	return sha1.Sum([]byte(name)) // Returns 20 byte hash
+	return sha256.Sum256([]byte(name))
 }
 
 func (nodeId NodeId) String() string {
