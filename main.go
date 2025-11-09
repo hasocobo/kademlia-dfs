@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math/big"
 	"net"
+	"sort"
 	"strconv"
 	"sync"
 )
@@ -83,6 +84,37 @@ func (rt *RoutingTable) Update(c Contact) {
 	bucket.Contacts.PushFront(c)
 }
 
+func (rt *RoutingTable) GetBucketIndex(selfID, targetID NodeId) int {
+	dist := xorDistance(selfID, targetID)
+
+	return dist.BitLen() - 1
+}
+
+/*
+We dump all of the contacts from each bucket into the contact sorter and
+then call its sort function to sort their distance to the targetID
+*/
+func (rt *RoutingTable) FindClosest(targetID NodeId, k int) []Contact {
+	contactSorter := &ContactSorter{TargetID: targetID}
+	for i := range rt.Buckets {
+		bucket := &rt.Buckets[i]
+
+		fmt.Printf("contact length of bucket %d is %d", i, bucket.Contacts.Len())
+		fmt.Println()
+		for e := bucket.Contacts.Front(); e != nil; e = e.Next() {
+			contactSorter.Contacts = append(contactSorter.Contacts, e.Value.(Contact))
+		}
+
+	}
+
+	sort.Sort(contactSorter)
+
+	if len(contactSorter.Contacts) < k {
+		return contactSorter.Contacts[:]
+	}
+	return contactSorter.Contacts[:k]
+}
+
 func (rt *RoutingTable) Print() {
 	for i, bucket := range rt.Buckets {
 		bucket.mu.RLock() // Read lock
@@ -106,11 +138,6 @@ func (rt *RoutingTable) Print() {
 
 		bucket.mu.RUnlock()
 	}
-}
-func (rt *RoutingTable) GetBucketIndex(selfID, otherID NodeId) int {
-	dist := xorDistance(selfID, otherID)
-
-	return dist.BitLen() - 1
 }
 
 func NewRoutingTable(selfID NodeId) *RoutingTable {
@@ -170,6 +197,14 @@ func main() {
 
 	rt.Print()
 
+	fmt.Println("K closest contacts after 10 Contacts")
+	closestContacts := rt.FindClosest(NewNodeId("test3"), k)
+
+	for _, v := range closestContacts {
+		fmt.Printf("Closest: %s\n Distance: %s\n", v.ID.String(), xorDistance(NewNodeId("test3"), v.ID))
+
+	}
+
 	for i := range 100 {
 		rt.Update(Contact{ID: NewNodeId("test " + strconv.Itoa(i)), IP: net.IPv4zero, Port: 10000 + i})
 	}
@@ -177,10 +212,19 @@ func main() {
 	fmt.Println("After 110 Contacts")
 	rt.Print()
 
-	for i := range 10000 {
-		rt.Update(Contact{ID: NewNodeId("test " + strconv.Itoa(i)), IP: net.IPv4zero, Port: 10000 + i})
+	fmt.Println("K closest contacts after 110 Contacts")
+	closestContacts = rt.FindClosest(NewNodeId("test3"), k)
+
+	for _, v := range closestContacts {
+		fmt.Printf("Closest: %s\n Distance: %s\n", v.ID.String(), xorDistance(NewNodeId("test3"), v.ID))
+
 	}
 
-	fmt.Println("After 10110 Contacts")
-	rt.Print()
+	// for i := range 10000 {
+	// 	rt.Update(Contact{ID: NewNodeId("test " + strconv.Itoa(i)), IP: net.IPv4zero, Port: 10000 + i})
+	// }
+
+	// fmt.Println("After 10110 Contacts")
+	// rt.Print()
+
 }
