@@ -58,6 +58,11 @@ type RoutingTable struct {
 	SelfID  NodeId
 }
 
+func (rt *RoutingTable) Ping() bool {
+	// Return false for now
+	return false
+}
+
 func (rt *RoutingTable) Update(c Contact) {
 	idx := rt.GetBucketIndex(rt.SelfID, c.ID)
 	bucket := &rt.Buckets[idx]
@@ -73,11 +78,13 @@ func (rt *RoutingTable) Update(c Contact) {
 	}
 	// if it's a new contact and the bucket is full
 	if bucket.Contacts.Len() == k {
-		// TODO: call ping to the least recently used, i.e. last, element
-		// and move to front if returns true for ping but accept false for now
-		lruElem := bucket.Contacts.Back()
-		bucket.Contacts.Remove(lruElem)
-		bucket.Contacts.PushFront(c)
+		if !rt.Ping() {
+			lruElem := bucket.Contacts.Back()
+			bucket.Contacts.Remove(lruElem)
+			bucket.Contacts.PushFront(c)
+		} else {
+			bucket.Contacts.MoveToFront(bucket.Contacts.Back())
+		}
 		return
 	}
 
