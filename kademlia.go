@@ -111,7 +111,6 @@ func (rt *RoutingTable) FindClosest(targetID NodeId, count int) []Contact {
 	}
 
 	sort.Sort(contactSorter)
-	fmt.Println(contactSorter.Contacts)
 
 	if len(contactSorter.Contacts) < count {
 		return contactSorter.Contacts[:]
@@ -144,8 +143,8 @@ func (rt *RoutingTable) Print() {
 	}
 }
 
-func NewRoutingTable(selfID NodeId) *RoutingTable {
-	rt := &RoutingTable{SelfID: selfID}
+func NewRoutingTable(selfID NodeId, ping pingFunc) *RoutingTable {
+	rt := &RoutingTable{SelfID: selfID, Ping: ping}
 
 	for i := range len(rt.Buckets) {
 		rt.Buckets[i].Contacts = list.New()
@@ -187,9 +186,12 @@ func (cs ContactSorter) Print() {
 }
 
 func main() {
+	pingFalse := func(c Contact) bool {
+		return false
+	}
 
 	selfID := NewNodeId("test")
-	rt := NewRoutingTable(selfID)
+	rt := NewRoutingTable(selfID, pingFalse)
 
 	rt.Print()
 
