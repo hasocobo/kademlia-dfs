@@ -56,12 +56,10 @@ type Bucket struct {
 type RoutingTable struct {
 	Buckets [idLength * 8]Bucket
 	SelfID  NodeId
+	Ping    pingFunc
 }
 
-func (rt *RoutingTable) Ping() bool {
-	// Return false for now
-	return false
-}
+type pingFunc func(Contact) bool
 
 func (rt *RoutingTable) Update(c Contact) {
 	idx := rt.GetBucketIndex(rt.SelfID, c.ID)
@@ -78,7 +76,7 @@ func (rt *RoutingTable) Update(c Contact) {
 	}
 	// if it's a new contact and the bucket is full
 	if bucket.Contacts.Len() == k {
-		if !rt.Ping() {
+		if !rt.Ping(bucket.Contacts.Back().Value.(Contact)) {
 			lruElem := bucket.Contacts.Back()
 			bucket.Contacts.Remove(lruElem)
 			bucket.Contacts.PushFront(c)
@@ -101,13 +99,11 @@ func (rt *RoutingTable) GetBucketIndex(selfID, targetID NodeId) int {
 We dump all of the contacts from each bucket into the contact sorter and
 then call its sort function to sort their distance to the targetID
 */
-func (rt *RoutingTable) FindClosest(targetID NodeId, k int) []Contact {
+func (rt *RoutingTable) FindClosest(targetID NodeId, count int) []Contact {
 	contactSorter := &ContactSorter{TargetID: targetID}
 	for i := range rt.Buckets {
 		bucket := &rt.Buckets[i]
 
-		fmt.Printf("contact length of bucket %d is %d", i, bucket.Contacts.Len())
-		fmt.Println()
 		for e := bucket.Contacts.Front(); e != nil; e = e.Next() {
 			contactSorter.Contacts = append(contactSorter.Contacts, e.Value.(Contact))
 		}
@@ -115,11 +111,12 @@ func (rt *RoutingTable) FindClosest(targetID NodeId, k int) []Contact {
 	}
 
 	sort.Sort(contactSorter)
+	fmt.Println(contactSorter.Contacts)
 
-	if len(contactSorter.Contacts) < k {
+	if len(contactSorter.Contacts) < count {
 		return contactSorter.Contacts[:]
 	}
-	return contactSorter.Contacts[:k]
+	return contactSorter.Contacts[:count]
 }
 
 func (rt *RoutingTable) Print() {
