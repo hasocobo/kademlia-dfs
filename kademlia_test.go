@@ -1,28 +1,41 @@
 package main
 
 import (
+	"math/rand/v2"
 	"net"
 	"reflect"
 	"testing"
 )
 
+func CreateContactForBucket(selfID NodeId, bucketIndex int, contactIndex int) Contact {
+	byteIndex := idLength - 1 - bucketIndex/8
+	bitPosition := bucketIndex % 8
+
+	createdContactID := selfID
+
+	createdContactID[byteIndex] ^= 1 << bitPosition
+	createdContactID[idLength-1] += byte(contactIndex)
+
+	return Contact{ID: createdContactID, IP: net.IPv4zero, Port: 10000 + contactIndex}
+}
+
 func TestRoutingTableUpdate_NewContact_BucketNotFull(t *testing.T) {
 	t.Parallel()
 
 	selfID := NewNodeId("test-id")
-	rt := NewRoutingTable(selfID, func(c Contact) bool { return false }) // dummy ping returns false
+	testBucketIndex := rand.IntN(idLength * 8)
+	contact := CreateContactForBucket(selfID, testBucketIndex, 0)
 
-	contact := Contact{ID: NewNodeId("test-id-2"), IP: net.IPv4zero, Port: 0}
+	rt := NewRoutingTable(selfID, func(c Contact) bool { return false }) // dummy ping returns false
 
 	rt.Update(contact)
 
-	idx := rt.GetBucketIndex(rt.SelfID, contact.ID)
-	if rt.Buckets[idx].Contacts.Len() == 0 {
-		t.Fatalf("bucket %d is empty after Update", idx)
+	if rt.Buckets[testBucketIndex].Contacts.Len() == 0 {
+		t.Fatalf("bucket %d is empty after Update", testBucketIndex)
 	}
 
-	if !reflect.DeepEqual(rt.Buckets[idx].Contacts.Front().Value, contact) {
-		t.Fatalf("unexpected contact in bucket %d: got %+v, want %+v", idx, rt.Buckets[idx].Contacts.Front().Value, contact)
+	if !reflect.DeepEqual(rt.Buckets[testBucketIndex].Contacts.Front().Value, contact) {
+		t.Fatalf("unexpected contact in bucket %d: got %+v, want %+v", testBucketIndex, rt.Buckets[testBucketIndex].Contacts.Front().Value, contact)
 	}
 }
 
@@ -30,27 +43,29 @@ func TestRoutingTableUpdate_ExistingContact_ShouldMoveToFront(t *testing.T) {
 	t.Parallel()
 
 	selfID := NewNodeId("test-id")
+	testBucketIndex := rand.IntN(idLength * 8)
+
 	rt := NewRoutingTable(selfID, func(c Contact) bool { return false }) // dummy ping returns false
 
-	existingContact := Contact{ID: NewNodeId("test-id-2"), IP: net.IPv4zero, Port: 0}
-	newContact := Contact{ID: NewNodeId("test-id-3"), IP: net.IPv4zero, Port: 0}
+	existingContact := CreateContactForBucket(selfID, testBucketIndex, 0)
+	newContact := CreateContactForBucket(selfID, testBucketIndex, 1)
 
-	idx := rt.GetBucketIndex(rt.SelfID, existingContact.ID)
-	rt.Buckets[idx].Contacts.PushFront(existingContact)
-	rt.Buckets[idx].Contacts.PushFront(newContact)
+	rt.Buckets[testBucketIndex].Contacts.PushFront(existingContact)
+	rt.Buckets[testBucketIndex].Contacts.PushFront(newContact)
 
-	if rt.Buckets[idx].Contacts.Len() != 2 {
-		t.Fatalf("unexpected bucket size, want 2, got: %d", rt.Buckets[idx].Contacts.Len())
+	if rt.Buckets[testBucketIndex].Contacts.Len() != 2 {
+		t.Fatalf("unexpected bucket size, want 2, got: %d", rt.Buckets[testBucketIndex].Contacts.Len())
 	}
 
-	if reflect.DeepEqual(rt.Buckets[idx].Contacts.Front().Value, existingContact) {
+	if reflect.DeepEqual(rt.Buckets[testBucketIndex].Contacts.Front().Value, existingContact) {
 		t.Fatalf("front value is already the existing contact")
 	}
 
 	rt.Update(existingContact)
 
-	if !reflect.DeepEqual(rt.Buckets[idx].Contacts.Front().Value, existingContact) {
-		t.Fatalf("unexpected contact in bucket %d: got %+v, want %+v", idx, rt.Buckets[idx].Contacts.Front().Value, existingContact)
+	if !reflect.DeepEqual(rt.Buckets[testBucketIndex].Contacts.Front().Value, existingContact) {
+		t.Fatalf("unexpected contact in bucket %d: got %+v, want %+v",
+			testBucketIndex, rt.Buckets[testBucketIndex].Contacts.Front().Value, existingContact)
 	}
 
 }
@@ -59,37 +74,34 @@ func TestRoutingTableUpdate_NewContact_BucketFull_PingFails_ShouldReplaceExistin
 	t.Parallel()
 
 	selfID := NewNodeId("test-id")
+	testBucketIndex := rand.IntN(idLength * 8)
 
 	rt := NewRoutingTable(selfID, func(c Contact) bool { return false }) // dummy ping returns false
 
-	existingContact := Contact{ID: NewNodeId("test-id-2"), IP: net.IPv4zero, Port: 0}
-	contactToBeEjected := Contact{ID: NewNodeId("test-id-21"), IP: net.IPv4zero, Port: 0}
-	newContact := Contact{ID: NewNodeId("test-id-3"), IP: net.IPv4zero, Port: 0}
+	existingContact := CreateContactForBucket(selfID, testBucketIndex, 0)
+	contactToBeEjected := CreateContactForBucket(selfID, testBucketIndex, 1)
+	newContact := CreateContactForBucket(selfID, testBucketIndex, 2)
 
-	idx := rt.GetBucketIndex(rt.SelfID, newContact.ID)
-
-	for i := range k {
-		if i == k-1 {
-			rt.Buckets[idx].Contacts.PushBack(contactToBeEjected)
-			continue
-		}
-		rt.Buckets[idx].Contacts.PushFront(existingContact)
+	testBucket := &rt.Buckets[testBucketIndex]
+	testBucket.Contacts.PushBack(contactToBeEjected)
+	for i := 0; i < k-1; i++ {
+		rt.Buckets[testBucketIndex].Contacts.PushFront(existingContact)
 	}
 
 	rt.Update(newContact)
 
-	if rt.Buckets[idx].Contacts.Len() != k {
-		t.Fatalf("unexpected bucket size, want: %d, got: %d", k, rt.Buckets[idx].Contacts.Len())
+	if rt.Buckets[testBucketIndex].Contacts.Len() != k {
+		t.Fatalf("unexpected bucket size, want: %d, got: %d", k, rt.Buckets[testBucketIndex].Contacts.Len())
 	}
 
-	if !reflect.DeepEqual(rt.Buckets[idx].Contacts.Front().Value, newContact) {
-		t.Fatalf("unexpected front contact value. want: %+v, got: %+v", newContact, rt.Buckets[idx].Contacts.Front().Value)
+	if !reflect.DeepEqual(rt.Buckets[testBucketIndex].Contacts.Front().Value, newContact) {
+		t.Fatalf("unexpected front contact value. want: %+v, got: %+v", newContact, rt.Buckets[testBucketIndex].Contacts.Front().Value)
 	}
 
-	if backValue := rt.Buckets[idx].Contacts.Back().Value; reflect.DeepEqual(backValue, contactToBeEjected) {
+	if backValue := rt.Buckets[testBucketIndex].Contacts.Back().Value; reflect.DeepEqual(backValue, contactToBeEjected) {
 		t.Fatalf(
 			"unexpected contact in bucket %d: failed to eject the lru contact. got %+v, want %+v",
-			idx, backValue, existingContact)
+			testBucketIndex, backValue, existingContact)
 	}
 }
 
@@ -97,37 +109,36 @@ func TestRoutingTableUpdate_NewContact_BucketFull_PingSucceeds_ShouldKeepExistin
 	t.Parallel()
 
 	selfID := NewNodeId("test-id")
+	testBucketIndex := rand.IntN(idLength * 8)
 
 	rt := NewRoutingTable(selfID, func(c Contact) bool { return true }) // dummy ping returns true
 
-	existingContact := Contact{ID: NewNodeId("test-id-2"), IP: net.IPv4zero, Port: 0}
-	contactToBeKept := Contact{ID: NewNodeId("test-id-21"), IP: net.IPv4zero, Port: 0}
-	newContact := Contact{ID: NewNodeId("test-id-3"), IP: net.IPv4zero, Port: 0}
-
-	idx := rt.GetBucketIndex(rt.SelfID, newContact.ID)
+	existingContact := CreateContactForBucket(selfID, testBucketIndex, 0)
+	contactToBeKept := CreateContactForBucket(selfID, testBucketIndex, 1)
+	newContact := CreateContactForBucket(selfID, testBucketIndex, 2)
 
 	for i := range k {
 		if i == k-1 {
-			rt.Buckets[idx].Contacts.PushBack(contactToBeKept)
+			rt.Buckets[testBucketIndex].Contacts.PushBack(contactToBeKept)
 			continue
 		}
-		rt.Buckets[idx].Contacts.PushFront(existingContact)
+		rt.Buckets[testBucketIndex].Contacts.PushFront(existingContact)
 	}
 
 	rt.Update(newContact)
 
-	if rt.Buckets[idx].Contacts.Len() != k {
-		t.Fatalf("unexpected bucket size, want: %d, got: %d", k, rt.Buckets[idx].Contacts.Len())
+	if rt.Buckets[testBucketIndex].Contacts.Len() != k {
+		t.Fatalf("unexpected bucket size, want: %d, got: %d", k, rt.Buckets[testBucketIndex].Contacts.Len())
 	}
 
-	if !reflect.DeepEqual(rt.Buckets[idx].Contacts.Front().Value, contactToBeKept) {
-		t.Fatalf("unexpected front contact value. want: %+v, got: %+v", newContact, rt.Buckets[idx].Contacts.Front().Value)
+	if !reflect.DeepEqual(rt.Buckets[testBucketIndex].Contacts.Front().Value, contactToBeKept) {
+		t.Fatalf("unexpected front contact value. want: %+v, got: %+v", newContact, rt.Buckets[testBucketIndex].Contacts.Front().Value)
 	}
 
-	if backValue := rt.Buckets[idx].Contacts.Back().Value; reflect.DeepEqual(backValue, contactToBeKept) {
+	if backValue := rt.Buckets[testBucketIndex].Contacts.Back().Value; reflect.DeepEqual(backValue, contactToBeKept) {
 		t.Fatalf(
 			"unexpected contact in bucket %d: failed to eject the lru contact. got %+v, want %+v",
-			idx, backValue, existingContact)
+			testBucketIndex, backValue, existingContact)
 	}
 }
 
