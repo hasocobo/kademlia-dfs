@@ -1,7 +1,6 @@
 package main
 
 import (
-	"math/rand/v2"
 	"net"
 	"reflect"
 	"testing"
@@ -23,7 +22,7 @@ func TestRoutingTableUpdate_NewContact_BucketNotFull(t *testing.T) {
 	t.Parallel()
 
 	selfID := NewNodeId("test-id")
-	testBucketIndex := rand.IntN(idLength * 8)
+	testBucketIndex := 10
 	contact := CreateContactForBucket(selfID, testBucketIndex, 0)
 
 	rt := NewRoutingTable(selfID, func(c Contact) bool { return false }) // dummy ping returns false
@@ -43,7 +42,7 @@ func TestRoutingTableUpdate_ExistingContact_ShouldMoveToFront(t *testing.T) {
 	t.Parallel()
 
 	selfID := NewNodeId("test-id")
-	testBucketIndex := rand.IntN(idLength * 8)
+	testBucketIndex := 10
 
 	rt := NewRoutingTable(selfID, func(c Contact) bool { return false }) // dummy ping returns false
 
@@ -74,7 +73,7 @@ func TestRoutingTableUpdate_NewContact_BucketFull_PingFails_ShouldReplaceExistin
 	t.Parallel()
 
 	selfID := NewNodeId("test-id")
-	testBucketIndex := rand.IntN(idLength * 8)
+	testBucketIndex := 10
 
 	rt := NewRoutingTable(selfID, func(c Contact) bool { return false }) // dummy ping returns false
 
@@ -109,7 +108,7 @@ func TestRoutingTableUpdate_NewContact_BucketFull_PingSucceeds_ShouldKeepExistin
 	t.Parallel()
 
 	selfID := NewNodeId("test-id")
-	testBucketIndex := rand.IntN(idLength * 8)
+	testBucketIndex := 10
 
 	rt := NewRoutingTable(selfID, func(c Contact) bool { return true }) // dummy ping returns true
 
