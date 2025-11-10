@@ -131,13 +131,19 @@ func TestRoutingTableUpdate_NewContact_BucketFull_PingSucceeds_ShouldKeepExistin
 	}
 
 	if !reflect.DeepEqual(rt.Buckets[testBucketIndex].Contacts.Front().Value, contactToBeKept) {
-		t.Fatalf("unexpected front contact value. want: %+v, got: %+v", newContact, rt.Buckets[testBucketIndex].Contacts.Front().Value)
+		t.Fatalf("unexpected front contact value. want: %+v, got: %+v", contactToBeKept, rt.Buckets[testBucketIndex].Contacts.Front().Value)
 	}
 
 	if backValue := rt.Buckets[testBucketIndex].Contacts.Back().Value; reflect.DeepEqual(backValue, contactToBeKept) {
 		t.Fatalf(
-			"unexpected contact in bucket %d: failed to eject the lru contact. got %+v, want %+v",
+			"unexpected contact in bucket %d: failed to move the lru contact. got %+v, want %+v",
 			testBucketIndex, backValue, existingContact)
+	}
+
+	for e := rt.Buckets[testBucketIndex].Contacts.Front(); e != nil; e = e.Next() {
+		if reflect.DeepEqual(e.Value, newContact) {
+			t.Fatalf("newContact was not rejected; it was found in the bucket")
+		}
 	}
 }
 
