@@ -4,11 +4,9 @@ import (
 	"container/list"
 	"crypto/sha256"
 	"encoding/hex"
-	"fmt"
 	"math/big"
 	"net"
 	"sort"
-	"strconv"
 	"sync"
 )
 
@@ -118,31 +116,6 @@ func (rt *RoutingTable) FindClosest(targetID NodeId, count int) []Contact {
 	return contactSorter.Contacts[:count]
 }
 
-func (rt *RoutingTable) Print() {
-	for i, bucket := range rt.Buckets {
-		bucket.mu.RLock() // Read lock
-
-		// Skip empty buckets for cleaner output
-		if bucket.Contacts.Len() == 0 {
-			bucket.mu.RUnlock()
-			continue
-		}
-
-		fmt.Printf("Bucket %d (%d contacts):\n", i, bucket.Contacts.Len())
-
-		// Iterate through the actual list elements
-		for e := bucket.Contacts.Front(); e != nil; e = e.Next() {
-			contact := e.Value.(Contact)
-			fmt.Printf("  ID: %s, IP: %s, Port: %d\n",
-				contact.ID.String()[:8]+"...", // First 8 chars of hash
-				contact.IP,
-				contact.Port)
-		}
-
-		bucket.mu.RUnlock()
-	}
-}
-
 func NewRoutingTable(selfID NodeId, ping pingFunc) *RoutingTable {
 	rt := &RoutingTable{SelfID: selfID, Ping: ping}
 
@@ -169,68 +142,4 @@ func (cs ContactSorter) Less(i, j int) bool {
 	return distI.Cmp(distJ) == -1
 }
 
-// To determine what bucket the target node belongs to, we need to get the index of the distance (value we get after applying xorDistance),
-//
-// i.e, 010001 means it belongs to the 5th bucket(read from right to left, least significant bit is at the most right)
-//
-// So if we calculate it with log_2, we get the index.
-//
-// But since sha1 is 160-bit length, we can't use math.log2 because it accepts numbers with 64 bit,
-//
-// So we have to use big.Int.BitLen which does the same thing on larger numbers
-
-func (cs ContactSorter) Print() {
-	for _, v := range cs.Contacts {
-		fmt.Println("Contact: ", v, "Distance: ", xorDistance(v.ID, cs.TargetID))
-	}
-}
-
-func main() {
-	pingFalse := func(c Contact) bool {
-		return false
-	}
-
-	selfID := NewNodeId("test")
-	rt := NewRoutingTable(selfID, pingFalse)
-
-	rt.Print()
-
-	for i := range 10 {
-		rt.Update(Contact{ID: NewNodeId("test " + strconv.Itoa(i)), IP: net.IPv4zero, Port: 10000 + i})
-	}
-
-	fmt.Println("After 10 Contacts")
-
-	rt.Print()
-
-	fmt.Println("K closest contacts after 10 Contacts")
-	closestContacts := rt.FindClosest(NewNodeId("test3"), k)
-
-	for _, v := range closestContacts {
-		fmt.Printf("Closest: %s\n Distance: %s\n", v.ID.String(), xorDistance(NewNodeId("test3"), v.ID))
-
-	}
-
-	for i := range 100 {
-		rt.Update(Contact{ID: NewNodeId("test " + strconv.Itoa(i)), IP: net.IPv4zero, Port: 10000 + i})
-	}
-
-	fmt.Println("After 110 Contacts")
-	rt.Print()
-
-	fmt.Println("K closest contacts after 110 Contacts")
-	closestContacts = rt.FindClosest(NewNodeId("test3"), k)
-
-	for _, v := range closestContacts {
-		fmt.Printf("Closest: %s\n Distance: %s\n", v.ID.String(), xorDistance(NewNodeId("test3"), v.ID))
-
-	}
-
-	// for i := range 10000 {
-	// 	rt.Update(Contact{ID: NewNodeId("test " + strconv.Itoa(i)), IP: net.IPv4zero, Port: 10000 + i})
-	// }
-
-	// fmt.Println("After 10110 Contacts")
-	// rt.Print()
-
-}
+func main() {}
