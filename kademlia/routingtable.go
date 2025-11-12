@@ -9,7 +9,8 @@ import (
 type RoutingTable struct {
 	Buckets [idLength * 8]Bucket
 	SelfID  NodeId
-	Ping    pingFunc
+
+	Ping pingFunc
 }
 
 type Bucket struct {
@@ -63,6 +64,7 @@ We dump all of the contacts from each bucket into the contact sorter and
 then call its sort function to sort their distance to the targetID
 */
 func (rt *RoutingTable) FindClosest(targetID NodeId, count int) []Contact {
+	// TODO: remove O(n) iteration and replace it with spiraling(i + 1, i - 1, i + 2, i - 2) starting from buckets[determinedIndexByXorOfTargetAndSelfId]
 	contactSorter := &ContactSorter{TargetID: targetID}
 	for i := range rt.Buckets {
 		bucket := &rt.Buckets[i]
@@ -70,7 +72,6 @@ func (rt *RoutingTable) FindClosest(targetID NodeId, count int) []Contact {
 		for e := bucket.Contacts.Front(); e != nil; e = e.Next() {
 			contactSorter.Contacts = append(contactSorter.Contacts, e.Value.(Contact))
 		}
-
 	}
 
 	sort.Sort(contactSorter)
