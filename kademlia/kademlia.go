@@ -17,12 +17,8 @@ const (
 	alphaConcurrency = 3 // Standard concurrency parameter (alpha) for Kademlia node lookup
 )
 
-func xorDistance(a, b NodeId) *big.Int {
+func XorDistance(a, b NodeId) *big.Int {
 	ai := new(big.Int).SetBytes(a[:])
 	bi := new(big.Int).SetBytes(b[:])
 	return new(big.Int).Xor(ai, bi)
-}
-
-func main() {
-
 }

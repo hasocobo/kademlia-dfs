@@ -1,6 +1,9 @@
 package kademliadfs
 
-import "net"
+import (
+	"fmt"
+	"net"
+)
 
 type Contact struct {
 	ID   NodeId
@@ -13,6 +16,17 @@ type ContactSorter struct {
 	Contacts []Contact
 }
 
+func (cs ContactSorter) Append(c ...Contact) {
+
+}
+
+func (cs ContactSorter) Print() {
+	for _, contact := range cs.Contacts {
+		fmt.Printf("ID: %v, Distance: %v", contact.ID, XorDistance(cs.TargetID, contact.ID))
+		fmt.Println()
+	}
+}
+
 // sort.Interface implementation
 func (cs ContactSorter) Len() int { return len(cs.Contacts) }
 func (cs ContactSorter) Swap(i, j int) {
@@ -20,7 +34,7 @@ func (cs ContactSorter) Swap(i, j int) {
 }
 
 func (cs ContactSorter) Less(i, j int) bool {
-	distI := xorDistance(cs.Contacts[i].ID, cs.TargetID)
-	distJ := xorDistance(cs.Contacts[j].ID, cs.TargetID)
+	distI := XorDistance(cs.Contacts[i].ID, cs.TargetID)
+	distJ := XorDistance(cs.Contacts[j].ID, cs.TargetID)
 	return distI.Cmp(distJ) == -1
 }

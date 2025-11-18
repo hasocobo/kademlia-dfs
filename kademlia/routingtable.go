@@ -31,6 +31,12 @@ func NewRoutingTable(selfID NodeId, ping pingFunc) *RoutingTable {
 
 func (rt *RoutingTable) Update(c Contact) {
 	idx := rt.GetBucketIndex(rt.SelfID, c.ID)
+
+	// Index is -1 if the contact is itself
+	if idx == -1 {
+		return
+	}
+
 	bucket := &rt.Buckets[idx]
 
 	bucket.mu.Lock()
@@ -64,7 +70,8 @@ We dump all of the contacts from each bucket into the contact sorter and
 then call its sort function to sort their distance to the targetID
 */
 func (rt *RoutingTable) FindClosest(targetID NodeId, count int) []Contact {
-	// TODO: remove O(n) iteration and replace it with spiraling(i + 1, i - 1, i + 2, i - 2) starting from buckets[determinedIndexByXorOfTargetAndSelfId]
+	// TODO: remove O(n) iteration and replace it with a spiraling(i + 1, i - 1, i + 2, i - 2) lookup
+	// starting from buckets[determinedIndexByXorOfTargetAndSelfId]
 	contactSorter := &ContactSorter{TargetID: targetID}
 	for i := range rt.Buckets {
 		bucket := &rt.Buckets[i]
@@ -83,7 +90,7 @@ func (rt *RoutingTable) FindClosest(targetID NodeId, count int) []Contact {
 }
 
 func (rt *RoutingTable) GetBucketIndex(selfID, targetID NodeId) int {
-	dist := xorDistance(selfID, targetID)
+	dist := XorDistance(selfID, targetID)
 
 	return dist.BitLen() - 1
 }
