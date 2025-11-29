@@ -3,6 +3,7 @@ package kademliadfs
 import (
 	"fmt"
 	"net"
+	"sort"
 )
 
 type Contact struct {
@@ -14,10 +15,27 @@ type Contact struct {
 type ContactSorter struct {
 	TargetID NodeId
 	Contacts []Contact
+
+	// We need this to know if an element is already in the contacts,
+	// required to prevent duplications
+	IsInContacts map[NodeId]bool
 }
 
-func (cs ContactSorter) Add(c ...Contact) {
+func NewContactSorter(targetID NodeId) *ContactSorter {
+	return &ContactSorter{TargetID: targetID, IsInContacts: make(map[NodeId]bool)}
+}
 
+func (cs *ContactSorter) Add(c ...Contact) {
+	for _, contact := range c {
+		if _, exists := cs.IsInContacts[contact.ID]; exists {
+			continue
+		}
+
+		cs.Contacts = append(cs.Contacts, contact)
+		cs.IsInContacts[contact.ID] = true
+	}
+	// TODO: Remove sort.Sort and replace it with binary search adding algorithm
+	sort.Sort(cs)
 }
 
 func (cs ContactSorter) Print() {

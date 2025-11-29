@@ -87,8 +87,8 @@ func (node *Node) Lookup(targetID NodeId) []Contact {
 	defer close(resultsChan)
 
 	// Grabs a few nodes from its own buckets for initial population
-	shortlist := &ContactSorter{TargetID: targetID}
-	shortlist.Contacts = append(shortlist.Contacts, node.RoutingTable.FindClosest(targetID, maxConcurrentRequests)...)
+	shortlist := NewContactSorter(targetID)
+	shortlist.Add(node.RoutingTable.FindClosest(targetID, maxConcurrentRequests)...)
 
 	// Number of current concurrent requests
 	inFlightCounter := 0
@@ -150,9 +150,7 @@ func (node *Node) Lookup(targetID NodeId) []Contact {
 				break
 			}
 
-			// TODO: replace the next 2 lines with a single line shortlist.add, and make it add to a sorted list
-			shortlist.Contacts = append(shortlist.Contacts, result.Contacts...)
-			sort.Sort(shortlist)
+			shortlist.Add(result.Contacts...)
 
 			nodeToQuery, err := findNextUnqueriedContact(shortlist.Contacts, queried)
 			if err != nil {

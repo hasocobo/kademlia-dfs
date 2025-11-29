@@ -2,7 +2,6 @@ package kademliadfs
 
 import (
 	"container/list"
-	"sort"
 	"sync"
 )
 
@@ -72,16 +71,14 @@ then call its sort function to sort their distance to the targetID
 func (rt *RoutingTable) FindClosest(targetID NodeId, count int) []Contact {
 	// TODO: remove O(n) iteration and replace it with a spiraling(i + 1, i - 1, i + 2, i - 2) lookup
 	// starting from buckets[determinedIndexByXorOfTargetAndSelfId]
-	contactSorter := &ContactSorter{TargetID: targetID}
+	contactSorter := NewContactSorter(targetID)
 	for i := range rt.Buckets {
 		bucket := &rt.Buckets[i]
 
 		for e := bucket.Contacts.Front(); e != nil; e = e.Next() {
-			contactSorter.Contacts = append(contactSorter.Contacts, e.Value.(Contact))
+			contactSorter.Add(e.Value.(Contact))
 		}
 	}
-
-	sort.Sort(contactSorter)
 
 	if len(contactSorter.Contacts) < count {
 		return contactSorter.Contacts[:]
