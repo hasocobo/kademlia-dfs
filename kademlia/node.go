@@ -18,6 +18,13 @@ type Node struct {
 	mu sync.RWMutex
 }
 
+type LookupResult struct {
+	NodeId   NodeId
+	Contacts []Contact
+}
+
+// type ConcurrentQuery func(chan LookupResult)
+
 func NewNode(id NodeId, ip net.IP, port int, network Network) *Node {
 	contact := Contact{ID: id, IP: ip, Port: port}
 	rt := NewRoutingTable(id, func(c Contact) bool { return true })
@@ -76,9 +83,34 @@ func (node *Node) HandleStore(requester Contact, key NodeId, value []byte) {
 }
 
 func (node *Node) Lookup(targetID NodeId) []Contact {
+	resultsChan := make(chan LookupResult)
+	defer close(resultsChan)
+
 	// Grabs a few nodes from its own buckets for initial population
 	shortlist := &ContactSorter{TargetID: targetID}
-	shortlist.Contacts = append(shortlist.Contacts, node.RoutingTable.FindClosest(targetID, alphaConcurrency)...)
+	shortlist.Contacts = append(shortlist.Contacts, node.RoutingTable.FindClosest(targetID, maxConcurrentRequests)...)
+
+	// Number of current concurrent requests
+	inFlightCounter := 0
+
+	query := func(c chan LookupResult, nodeToQuery Contact) {
+		result, err := node.Network.FindNode(node.Self, nodeToQuery, targetID)
+		if err != nil {
+			return
+		}
+		c <- LookupResult{nodeToQuery.ID, result}
+	}
+
+	findNextUnqueriedContact := func(contactList []Contact, queryMap map[NodeId]bool) (*Contact, error) {
+		for _, contact := range contactList {
+			if queryMap[contact.ID] {
+				continue
+			}
+			queryMap[contact.ID] = true
+			return &contact, nil
+		}
+		return nil, fmt.Errorf("Contact Not Found")
+	}
 
 	if len(shortlist.Contacts) == 0 {
 		fmt.Println("Found no contacts in buckets")
@@ -88,60 +120,55 @@ func (node *Node) Lookup(targetID NodeId) []Contact {
 	sort.Sort(shortlist)
 
 	queried := make(map[NodeId]bool, k)
-	snapshot := shortlist.Contacts[:]
 
-	foundCloserNode := true
+	moreNodesToQuery := true
 	// Then queries these nodes and keeps populating nodes to query
-	for foundCloserNode {
-		for _, nodeToQuery := range snapshot {
-			result, err := node.Network.FindNode(node.Self, nodeToQuery, targetID)
-
+	for moreNodesToQuery {
+		for inFlightCounter <= maxConcurrentRequests {
+			nodeToQuery, err := findNextUnqueriedContact(shortlist.Contacts, queried)
 			if err != nil {
-				continue
+				break
 			}
+			inFlightCounter++
+			go query(resultsChan, *nodeToQuery)
+		}
 
-			for _, contact := range result {
+		for {
+			result := <-resultsChan
+			inFlightCounter--
+			for _, contact := range result.Contacts {
 				node.RoutingTable.Update(contact)
 			}
-
 			// If the newly queried contact doesn't know a closer node to the target id, exit the loop
-			if XorDistance(shortlist.Contacts[0].ID, targetID).Cmp(XorDistance(result[0].ID, targetID)) == -1 {
-				foundCloserNode = false
+			if XorDistance(shortlist.Contacts[0].ID, targetID).Cmp(XorDistance(result.Contacts[0].ID, targetID)) == -1 {
+				// If there are still concurrent requests at the moment, don't immediately break the loop
+				// and keep going
+				if inFlightCounter > 0 {
+					continue
+				}
+				moreNodesToQuery = false
 				break
 			}
 
-			shortlist.Contacts = append(shortlist.Contacts, result...)
-			queried[nodeToQuery.ID] = true
-		}
+			// TODO: replace the next 2 lines with a single line shortlist.add, and make it add to a sorted list
+			shortlist.Contacts = append(shortlist.Contacts, result.Contacts...)
+			sort.Sort(shortlist)
 
-		if !foundCloserNode || len(snapshot) == 0 {
-			break
-		}
-
-		// Clear the snapshot
-		snapshot = make([]Contact, 0, alphaConcurrency)
-
-		// Retake the snapshot
-		for _, nodeToQuery := range shortlist.Contacts {
-			if len(snapshot) >= alphaConcurrency {
+			nodeToQuery, err := findNextUnqueriedContact(shortlist.Contacts, queried)
+			if err != nil {
 				break
 			}
 
-			if !queried[nodeToQuery.ID] {
-				snapshot = append(snapshot, nodeToQuery)
-			}
+			inFlightCounter++
+			go query(resultsChan, *nodeToQuery)
 		}
 	}
-
-	sort.Sort(shortlist)
-	shortlist.Print()
 
 	if len(shortlist.Contacts) < k {
 		return shortlist.Contacts
 	}
 
 	return shortlist.Contacts[:k]
-
 }
 
 func (node *Node) Join(bootstrapNode Contact) error {

@@ -12,9 +12,9 @@ This makes the identifier space vulnerable to attacks and undermines the securit
 SHA-256 is much stronger, with no known practical collision or preimage attacks, it is a safer choice for node identifiers.
 */
 const (
-	idLength         = 32
-	k                = 32
-	alphaConcurrency = 3 // Standard concurrency parameter (alpha) for Kademlia node lookup
+	idLength              = 32
+	k                     = 32
+	maxConcurrentRequests = 3 // Standard concurrency parameter (alpha) for Kademlia node lookup
 )
 
 func XorDistance(a, b NodeId) *big.Int {

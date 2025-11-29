@@ -16,7 +16,7 @@ type ContactSorter struct {
 	Contacts []Contact
 }
 
-func (cs ContactSorter) Append(c ...Contact) {
+func (cs ContactSorter) Add(c ...Contact) {
 
 }
 
@@ -28,6 +28,7 @@ func (cs ContactSorter) Print() {
 }
 
 // sort.Interface implementation
+
 func (cs ContactSorter) Len() int { return len(cs.Contacts) }
 func (cs ContactSorter) Swap(i, j int) {
 	cs.Contacts[i], cs.Contacts[j] = cs.Contacts[j], cs.Contacts[i]

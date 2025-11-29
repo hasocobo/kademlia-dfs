@@ -50,6 +50,7 @@ func main() {
 	lookupResult := testNode1.Lookup(kademliadfs.NewNodeId("test 233"))
 
 	for _, v := range lookupResult {
-		fmt.Printf("%v, %v", v, kademliadfs.XorDistance(v.ID, kademliadfs.NewNodeId("test 233")))
+		fmt.Printf("%v, %v", v, kademliadfs.XorDistance(v.ID, kademliadfs.NewNodeId("test 233")).String())
+		fmt.Println()
 	}
 }
