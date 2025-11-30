@@ -17,3 +17,6 @@ tasks:
     deps: [build]
     cmds:
       - ./cmd/kademlia
+  test:
+    cmds:
+      - go test -C kademlia

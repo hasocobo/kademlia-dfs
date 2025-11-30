@@ -84,7 +84,6 @@ func (node *Node) HandleStore(requester Contact, key NodeId, value []byte) {
 
 func (node *Node) Lookup(targetID NodeId) []Contact {
 	resultsChan := make(chan LookupResult)
-	defer close(resultsChan)
 
 	// Grabs a few nodes from its own buckets for initial population
 	shortlist := NewContactSorter(targetID)

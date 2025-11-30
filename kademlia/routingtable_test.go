@@ -146,6 +146,7 @@ func TestRoutingTableFindClosest_MoreThanKContacts_PingReturnsTrue_ShouldReturnF
 
 	// Create a Node ID with 1 at the index while leaving the rest 0
 	// Need to use this to create one node for each bucket
+	// TODO: Replace this with already existing CreateBucketForIndex function in contact_test.go
 	createNodeIDWithBitSet := func(bitIndex int) NodeId {
 		tempID := NodeId{}
 		byteIndex := idLength - 1 - (bitIndex / 8)
