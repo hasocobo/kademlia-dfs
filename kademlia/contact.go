@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net"
 	"sort"
+	"sync"
 )
 
 type Contact struct {
@@ -19,6 +20,8 @@ type ContactSorter struct {
 	// We need this to know if an element is already in the contacts,
 	// required to prevent duplications
 	IsInContacts map[NodeId]bool
+
+	mu sync.Mutex
 }
 
 func NewContactSorter(targetID NodeId) *ContactSorter {
@@ -26,6 +29,9 @@ func NewContactSorter(targetID NodeId) *ContactSorter {
 }
 
 func (cs *ContactSorter) Add(c ...Contact) {
+	cs.mu.Lock()
+	defer cs.mu.Unlock()
+
 	for _, contact := range c {
 		if _, exists := cs.IsInContacts[contact.ID]; exists {
 			continue
@@ -38,21 +44,31 @@ func (cs *ContactSorter) Add(c ...Contact) {
 	sort.Sort(cs)
 }
 
-func (cs ContactSorter) Print() {
+func (cs *ContactSorter) Get(i int) Contact {
+	cs.mu.Lock()
+	defer cs.mu.Unlock()
+
+	return cs.Contacts[i]
+}
+
+func (cs *ContactSorter) Print() {
+	cs.mu.Lock()
+	defer cs.mu.Unlock()
+
 	for _, contact := range cs.Contacts {
 		fmt.Printf("ID: %v, Distance: %v", contact.ID, XorDistance(cs.TargetID, contact.ID))
 		fmt.Println()
 	}
 }
 
-// sort.Interface implementation
+// sort.Interface methods
 
-func (cs ContactSorter) Len() int { return len(cs.Contacts) }
-func (cs ContactSorter) Swap(i, j int) {
+func (cs *ContactSorter) Len() int { return len(cs.Contacts) }
+func (cs *ContactSorter) Swap(i, j int) {
 	cs.Contacts[i], cs.Contacts[j] = cs.Contacts[j], cs.Contacts[i]
 }
 
-func (cs ContactSorter) Less(i, j int) bool {
+func (cs *ContactSorter) Less(i, j int) bool {
 	distI := XorDistance(cs.Contacts[i].ID, cs.TargetID)
 	distJ := XorDistance(cs.Contacts[j].ID, cs.TargetID)
 	return distI.Cmp(distJ) == -1
