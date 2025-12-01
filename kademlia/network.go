@@ -37,6 +37,7 @@ func NewUDPNetwork(ip net.IP, port int) *UDPNetwork {
 }
 
 func (n *UDPNetwork) Listen() {
+	defer n.conn.Close()
 	for {
 		buf := make([]byte, MaxUDPPacketSize)
 		_, addr, err := n.conn.ReadFromUDP(buf)
