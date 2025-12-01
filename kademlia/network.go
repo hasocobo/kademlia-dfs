@@ -2,7 +2,12 @@ package kademliadfs
 
 import (
 	"fmt"
+	"net"
 	"sync"
+)
+
+const (
+	MaxUDPPacketSize = 65535
 )
 
 type Network interface {
@@ -10,6 +15,40 @@ type Network interface {
 	FindNode(requester, recipient Contact, targetID NodeId) ([]Contact, error)
 	FindValue(requester, recipient Contact, key NodeId) ([]byte, []Contact, error)
 	Store(requester, recipient Contact, key NodeId, value []byte) error
+}
+
+type UDPNetwork struct {
+	conn              *net.UDPConn
+	remoteConnections sync.Map
+
+	mu sync.Mutex
+}
+
+func NewUDPNetwork(ip net.IP, port int) *UDPNetwork {
+	udpConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: ip, Port: port})
+	if err != nil {
+		panic(fmt.Sprintf("Error creating UDP listener: %v", err))
+	}
+
+	fmt.Printf("Listening on %v", udpConn.LocalAddr().String())
+	fmt.Println()
+
+	return &UDPNetwork{conn: udpConn, remoteConnections: *new(sync.Map)}
+}
+
+func (n *UDPNetwork) Listen() {
+	for {
+		buf := make([]byte, MaxUDPPacketSize)
+		_, addr, err := n.conn.ReadFromUDP(buf)
+
+		if err != nil {
+			fmt.Errorf("Error reading from UDP: %v", err)
+		}
+
+		if _, exists := n.remoteConnections.Load(addr.String()); !exists {
+			n.remoteConnections.Store(addr.String(), &addr)
+		}
+	}
 }
 
 // Simulation network implements Network to test the core RPC calls without the complexity of UDP yet
