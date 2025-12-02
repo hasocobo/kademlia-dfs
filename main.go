@@ -17,6 +17,8 @@ func main() {
 	port := *portPtr
 
 	udpNetwork := kademliadfs.NewUDPNetwork(ipAddress, port)
+	node := kademliadfs.NewNode(kademliadfs.NewRandomId(), ipAddress, port, udpNetwork)
+	udpNetwork.SetHandler(node)
 
 	go udpNetwork.Listen()
 	select {} // Block main to keep the program alive to run goroutines

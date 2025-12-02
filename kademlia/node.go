@@ -1,6 +1,7 @@
 package kademliadfs
 
 import (
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -39,6 +40,15 @@ func NewNodeId(name string) NodeId {
 	return sha256.Sum256([]byte(name))
 }
 
+func NewRandomId() NodeId {
+	var randomId NodeId
+	_, err := rand.Read(randomId[:]) // This fills randomId variable with random bytes
+	if err != nil {
+		panic(fmt.Sprintf("failed to generate random NodeId: %v", err))
+	}
+	return randomId
+}
+
 func (nodeId NodeId) String() string {
 	return hex.EncodeToString(nodeId[:])
 }
@@ -53,10 +63,10 @@ func (node *Node) HandlePing(requester Contact) bool {
 // e.g with a 3 parameter function:
 // FindNode(requester: Contact, recipientNodeToAsk: Node, targetId: NodeId) and in turn this
 // will be handled by the function below by the recipientNodeToAsk.
-func (node *Node) HandleFindNode(requester Contact, targetID NodeId) []Contact {
+func (node *Node) HandleFindNode(requester Contact, key NodeId) []Contact {
 	node.RoutingTable.Update(requester)
 
-	return node.RoutingTable.FindClosest(targetID, k)
+	return node.RoutingTable.FindClosest(key, k)
 }
 
 // Return the value if it exists, return closest nodes if not

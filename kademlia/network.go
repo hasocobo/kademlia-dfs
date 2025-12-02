@@ -1,6 +1,7 @@
 package kademliadfs
 
 import (
+	"encoding/binary"
 	"fmt"
 	"net"
 	"sync"
@@ -20,9 +21,61 @@ type Network interface {
 type UDPNetwork struct {
 	conn              *net.UDPConn
 	remoteConnections sync.Map
+	rpcHandler        RpcHandler
 
 	mu sync.Mutex
 }
+
+// FindNode implements Network.
+func (network *UDPNetwork) FindNode(requester Contact, recipient Contact, targetID NodeId) ([]Contact, error) {
+	panic("unimplemented")
+}
+
+// FindValue implements Network.
+func (network *UDPNetwork) FindValue(requester Contact, recipient Contact, key NodeId) ([]byte, []Contact, error) {
+	panic("unimplemented")
+}
+
+// Ping implements Network.
+func (network *UDPNetwork) Ping(requster Contact, recipient Contact) error {
+	panic("unimplemented")
+}
+
+// Store implements Network.
+func (network *UDPNetwork) Store(requester Contact, recipient Contact, key NodeId, value []byte) error {
+	panic("unimplemented")
+}
+
+type RpcHandler interface {
+	HandlePing(requester Contact) bool
+	HandleFindNode(requester Contact, key NodeId) []Contact
+	HandleFindValue(requester Contact, key NodeId) ([]byte, []Contact)
+	HandleStore(requester Contact, key NodeId, value []byte)
+}
+
+// Fixed length Rpc Message structure for now, might migrate to protobuf/avro in the future
+type RpcMessage struct {
+	OpCode         OpCode // Rpc Message Type is decided based on this value
+	SelfNodeId     NodeId
+	Key            NodeId
+	ValueLength    int
+	Value          []byte
+	ContactsLength int
+	Contacts       []Contact
+}
+
+type OpCode int
+
+const (
+	Ping OpCode = iota
+	Pong
+	FindNodeRequest
+	FindNodeResponse
+	FindValueRequest
+	FindValueResponse
+	StoreRequest
+	StoreResponse
+)
 
 func NewUDPNetwork(ip net.IP, port int) *UDPNetwork {
 	udpConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: ip, Port: port})
@@ -36,18 +89,73 @@ func NewUDPNetwork(ip net.IP, port int) *UDPNetwork {
 	return &UDPNetwork{conn: udpConn, remoteConnections: *new(sync.Map)}
 }
 
-func (n *UDPNetwork) Listen() {
-	defer n.conn.Close()
+func (network *UDPNetwork) SetHandler(rpcHandler RpcHandler) {
+	network.rpcHandler = rpcHandler
+}
+
+func (network *UDPNetwork) Decode(packet []byte) (*RpcMessage, error) {
+	if len(packet) == 0 {
+		return nil, fmt.Errorf("packet length is invalid: %d", len(packet))
+	}
+	opCode := int(binary.BigEndian.Uint64(packet[:1])) // Convert byte to int
+	nodeId := packet[1 : idLength+1]
+	payload := packet[idLength+1:]
+
+	return &RpcMessage{OpCode: OpCode(opCode),
+		NodeId:  NodeId(nodeId),
+		Payload: payload}, nil
+}
+
+func (network *UDPNetwork) Encode(message RpcMessage) []byte {
+	var encodedMessage []byte
+	var err error
+
+	encodedMessage = binary.BigEndian.AppendUint64(encodedMessage, uint64(message.OpCode))
+
+	encodedMessage, err = binary.Append(encodedMessage, binary.BigEndian, message.NodeId)
+	if err != nil {
+		return nil // Return nil or you might want to handle or log the error.
+	}
+
+	encodedMessage, err = binary.Append(encodedMessage, binary.BigEndian, message.Payload)
+	if err != nil {
+		return nil
+	}
+
+	return encodedMessage
+}
+
+func (network *UDPNetwork) Listen() error {
+	defer network.conn.Close()
 	for {
 		buf := make([]byte, MaxUDPPacketSize)
-		_, addr, err := n.conn.ReadFromUDP(buf)
+		n, addr, err := network.conn.ReadFromUDP(buf)
 
 		if err != nil {
-			fmt.Errorf("Error reading from UDP: %v", err)
+			return fmt.Errorf("error reading from UDP: %v", err)
+		}
+		if _, exists := network.remoteConnections.Load(addr.String()); !exists {
+			network.remoteConnections.Store(addr.String(), &addr)
 		}
 
-		if _, exists := n.remoteConnections.Load(addr.String()); !exists {
-			n.remoteConnections.Store(addr.String(), &addr)
+		data := buf[:n]
+
+		message, err := network.Decode(data)
+		if err != nil {
+			fmt.Printf("failed to decode UDP packet from %v: %v\n", addr, err)
+			continue
+		}
+
+		switch message.OpCode {
+		case Ping:
+			network.rpcHandler.HandlePing(Contact{ID: message.NodeId, IP: addr.IP, Port: addr.Port})
+		case FindNodeRequest:
+			network.rpcHandler.HandleFindNode(Contact{ID: message.NodeId, IP: addr.IP, Port: addr.Port})
+
+		case FindValueRequest:
+
+		case StoreRequest:
+
 		}
 	}
 }
