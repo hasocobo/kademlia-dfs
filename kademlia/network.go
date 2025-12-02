@@ -93,33 +93,86 @@ func (network *UDPNetwork) SetHandler(rpcHandler RpcHandler) {
 	network.rpcHandler = rpcHandler
 }
 
+// Converts raw UDP packet bytes to RpcMessage struct
 func (network *UDPNetwork) Decode(packet []byte) (*RpcMessage, error) {
 	if len(packet) == 0 {
 		return nil, fmt.Errorf("packet length is invalid: %d", len(packet))
 	}
 	opCode := int(binary.BigEndian.Uint64(packet[:1])) // Convert byte to int
-	nodeId := packet[1 : idLength+1]
-	payload := packet[idLength+1:]
+	packet = packet[1:]
+
+	selfNodeId := packet[:idLength]
+	packet = packet[idLength:]
+
+	key := packet[:idLength]
+	packet = packet[idLength:]
+
+	valueLength := int(binary.BigEndian.Uint64(packet[:1]))
+	packet = packet[1:]
+
+	value := packet[:valueLength]
+	packet = packet[valueLength:]
+
+	contactsLen := int(binary.BigEndian.Uint64(packet[:1]))
+	packet = packet[1:]
+
+	contacts := make([]Contact, contactsLen)
+	for i := range contactsLen {
+		contactId := packet[:idLength]
+		packet = packet[idLength:]
+
+		contactIp := packet[:net.IPv4len]
+		packet = packet[net.IPv4len:]
+
+		contactPort := packet[:16] // uint16
+		packet = packet[16:]
+
+		contacts[i] = Contact{ID: NodeId(contactId), IP: contactIp, Port: int(binary.BigEndian.Uint16(contactPort))}
+	}
 
 	return &RpcMessage{OpCode: OpCode(opCode),
-		NodeId:  NodeId(nodeId),
-		Payload: payload}, nil
+			SelfNodeId:     NodeId(selfNodeId),
+			Key:            NodeId(key),
+			ValueLength:    valueLength,
+			Value:          value,
+			ContactsLength: contactsLen,
+			Contacts:       contacts,
+		},
+		nil
 }
 
+// TAkes RpcMessage struct and converts it to raw UDP bytes
 func (network *UDPNetwork) Encode(message RpcMessage) []byte {
 	var encodedMessage []byte
 	var err error
 
 	encodedMessage = binary.BigEndian.AppendUint64(encodedMessage, uint64(message.OpCode))
 
-	encodedMessage, err = binary.Append(encodedMessage, binary.BigEndian, message.NodeId)
-	if err != nil {
-		return nil // Return nil or you might want to handle or log the error.
-	}
-
-	encodedMessage, err = binary.Append(encodedMessage, binary.BigEndian, message.Payload)
+	encodedMessage, err = binary.Append(encodedMessage, binary.BigEndian, message.SelfNodeId)
 	if err != nil {
 		return nil
+	}
+
+	encodedMessage, err = binary.Append(encodedMessage, binary.BigEndian, message.Key)
+	if err != nil {
+		return nil
+	}
+
+	encodedMessage = binary.BigEndian.AppendUint64(encodedMessage, uint64(message.ValueLength))
+
+	encodedMessage = append(encodedMessage, message.Value...)
+
+	encodedMessage = binary.BigEndian.AppendUint64(encodedMessage, uint64(message.ContactsLength))
+
+	for _, contact := range message.Contacts {
+		encodedMessage, err = binary.Append(encodedMessage, binary.BigEndian, contact.ID)
+		if err != nil {
+			return nil
+		}
+
+		encodedMessage = append(encodedMessage, contact.IP.To4()...)
+
+		encodedMessage = binary.BigEndian.AppendUint16(encodedMessage, uint16(contact.Port))
 	}
 
 	return encodedMessage
@@ -148,14 +201,13 @@ func (network *UDPNetwork) Listen() error {
 
 		switch message.OpCode {
 		case Ping:
-			network.rpcHandler.HandlePing(Contact{ID: message.NodeId, IP: addr.IP, Port: addr.Port})
+			network.rpcHandler.HandlePing(Contact{ID: message.SelfNodeId, IP: addr.IP, Port: addr.Port})
 		case FindNodeRequest:
-			network.rpcHandler.HandleFindNode(Contact{ID: message.NodeId, IP: addr.IP, Port: addr.Port})
-
+			network.rpcHandler.HandleFindNode(Contact{ID: message.SelfNodeId, IP: addr.IP, Port: addr.Port}, message.Key)
 		case FindValueRequest:
-
+			network.rpcHandler.HandleFindValue(Contact{ID: message.SelfNodeId, IP: addr.IP, Port: addr.Port}, message.Key)
 		case StoreRequest:
-
+			network.rpcHandler.HandleStore(Contact{ID: message.SelfNodeId, IP: addr.IP, Port: addr.Port}, message.Key, message.Value)
 		}
 	}
 }
