@@ -88,7 +88,7 @@ func (node *Node) HandleFindValue(requester Contact, key NodeId) ([]byte, []Cont
 func (node *Node) HandleStore(requester Contact, key NodeId, value []byte) {
 	node.RoutingTable.Update(requester)
 
-	node.mu.Lock()
+	node.mu.RLock()
 	defer node.mu.RUnlock()
 
 	node.Storage[key] = value
