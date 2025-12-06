@@ -194,3 +194,17 @@ func (node *Node) Join(bootstrapNode Contact) error {
 
 	return nil
 }
+
+func (node *Node) Put(key string, value []byte) error {
+	hashedKey := sha256.Sum256([]byte(key))
+	closestContacts := node.Lookup(hashedKey)
+
+	if len(closestContacts) == 0 {
+		return fmt.Errorf("error finding closest nodes for put: length is equal to 0")
+	}
+
+	for _, contact := range closestContacts {
+		node.Network.Store(node.Self, contact, hashedKey, value)
+	}
+	return nil
+}
