@@ -5,9 +5,11 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"log"
 	"net"
 	"sort"
 	"sync"
+	"time"
 )
 
 type Node struct {
@@ -41,12 +43,12 @@ func NewNodeId(name string) NodeId {
 }
 
 func NewRandomId() NodeId {
-	var randomId NodeId
-	_, err := rand.Read(randomId[:]) // This fills randomId variable with random bytes
+	var randomID NodeId
+	_, err := rand.Read(randomID[:]) // This fills randomId variable with random bytes
 	if err != nil {
 		panic(fmt.Sprintf("failed to generate random NodeId: %v", err))
 	}
-	return randomId
+	return randomID
 }
 
 func (nodeId NodeId) String() string {
@@ -105,6 +107,7 @@ func (node *Node) Lookup(targetID NodeId) []Contact {
 	query := func(c chan LookupResult, nodeToQuery Contact) {
 		result, err := node.Network.FindNode(node.Self, nodeToQuery, targetID)
 		if err != nil {
+			log.Fatalf("error finding node: %v", err)
 			return
 		}
 		c <- LookupResult{nodeToQuery.ID, result}
@@ -132,6 +135,7 @@ func (node *Node) Lookup(targetID NodeId) []Contact {
 
 	moreNodesToQuery := true
 	// Then queries these nodes and keeps populating nodes to query
+lookupLoop:
 	for moreNodesToQuery {
 		for inFlightCounter <= maxConcurrentRequests {
 			nodeToQuery, err := findNextUnqueriedContact(shortlist.Contacts, queried)
@@ -142,8 +146,12 @@ func (node *Node) Lookup(targetID NodeId) []Contact {
 			go query(resultsChan, *nodeToQuery)
 		}
 
-		for {
-			result := <-resultsChan
+		select {
+		case <-time.After(time.Millisecond * 10000):
+			moreNodesToQuery = false
+			fmt.Println("query request timed out")
+			break lookupLoop
+		case result := <-resultsChan:
 			inFlightCounter--
 			for _, contact := range result.Contacts {
 				node.RoutingTable.Update(contact)
@@ -169,6 +177,7 @@ func (node *Node) Lookup(targetID NodeId) []Contact {
 			inFlightCounter++
 			go query(resultsChan, *nodeToQuery)
 		}
+
 	}
 
 	if len(shortlist.Contacts) < k {

@@ -3,8 +3,10 @@ package kademliadfs
 import (
 	"encoding/binary"
 	"fmt"
+	"log"
 	"net"
 	"sync"
+	"time"
 )
 
 const (
@@ -19,16 +21,42 @@ type Network interface {
 }
 
 type UDPNetwork struct {
-	conn              *net.UDPConn
-	remoteConnections sync.Map
-	rpcHandler        RpcHandler
+	conn       *net.UDPConn
+	pending    map[NodeId]chan []Contact
+	rpcHandler RpcHandler
 
 	mu sync.Mutex
 }
 
 // FindNode implements Network.
 func (network *UDPNetwork) FindNode(requester Contact, recipient Contact, targetID NodeId) ([]Contact, error) {
-	panic("unimplemented")
+	resultsChan := make(chan []Contact, 1)
+	rpcMessage := &RpcMessage{
+		MessageID:      NewRandomId(),
+		OpCode:         FindNodeRequest,
+		SelfNodeId:     requester.ID,
+		Key:            targetID,
+		ValueLength:    0,
+		Value:          nil,
+		ContactsLength: 0,
+		Contacts:       nil,
+	}
+	network.mu.Lock()
+	network.pending[rpcMessage.MessageID] = resultsChan
+	network.mu.Unlock()
+	msgToSend := network.Encode(rpcMessage)
+	_, err := network.conn.WriteToUDP(msgToSend, &net.UDPAddr{IP: recipient.IP, Port: recipient.Port})
+	if err != nil {
+		panic(fmt.Errorf("error writing to udp: %v", err))
+	}
+	// Times out if after 500 ms
+	select {
+	case contacts := <-resultsChan:
+		return contacts, nil
+	case <-time.After(time.Millisecond * 5000):
+		log.Println("timeout waiting for FindNode response")
+		return nil, fmt.Errorf("timeout waiting for FindNode response")
+	}
 }
 
 // FindValue implements Network.
@@ -55,16 +83,17 @@ type RpcHandler interface {
 
 // Fixed length Rpc Message structure for now, might migrate to protobuf/avro in the future
 type RpcMessage struct {
+	MessageID      NodeId
 	OpCode         OpCode // Rpc Message Type is decided based on this value
 	SelfNodeId     NodeId
 	Key            NodeId
-	ValueLength    int
+	ValueLength    uint64
 	Value          []byte
-	ContactsLength int
+	ContactsLength uint64
 	Contacts       []Contact
 }
 
-type OpCode int
+type OpCode uint8
 
 const (
 	Ping OpCode = iota
@@ -86,7 +115,7 @@ func NewUDPNetwork(ip net.IP, port int) *UDPNetwork {
 	fmt.Printf("Listening on %v", udpConn.LocalAddr().String())
 	fmt.Println()
 
-	return &UDPNetwork{conn: udpConn, remoteConnections: *new(sync.Map)}
+	return &UDPNetwork{conn: udpConn, pending: make(map[NodeId]chan []Contact)}
 }
 
 func (network *UDPNetwork) SetHandler(rpcHandler RpcHandler) {
@@ -98,7 +127,10 @@ func (network *UDPNetwork) Decode(packet []byte) (*RpcMessage, error) {
 	if len(packet) == 0 {
 		return nil, fmt.Errorf("packet length is invalid: %d", len(packet))
 	}
-	opCode := int(binary.BigEndian.Uint64(packet[:1])) // Convert byte to int
+	messageId := packet[:idLength]
+	packet = packet[idLength:]
+
+	opCode := int(packet[0]) // Convert byte to int
 	packet = packet[1:]
 
 	selfNodeId := packet[:idLength]
@@ -107,14 +139,14 @@ func (network *UDPNetwork) Decode(packet []byte) (*RpcMessage, error) {
 	key := packet[:idLength]
 	packet = packet[idLength:]
 
-	valueLength := int(binary.BigEndian.Uint64(packet[:1]))
-	packet = packet[1:]
+	valueLength := binary.BigEndian.Uint64(packet[:8])
+	packet = packet[8:]
 
 	value := packet[:valueLength]
 	packet = packet[valueLength:]
 
-	contactsLen := int(binary.BigEndian.Uint64(packet[:1]))
-	packet = packet[1:]
+	contactsLen := binary.BigEndian.Uint64(packet[:8])
+	packet = packet[8:]
 
 	contacts := make([]Contact, contactsLen)
 	for i := range contactsLen {
@@ -124,13 +156,15 @@ func (network *UDPNetwork) Decode(packet []byte) (*RpcMessage, error) {
 		contactIp := packet[:net.IPv4len]
 		packet = packet[net.IPv4len:]
 
-		contactPort := packet[:16] // uint16
-		packet = packet[16:]
+		contactPort := packet[:2] // uint16
+		packet = packet[2:]
 
 		contacts[i] = Contact{ID: NodeId(contactId), IP: contactIp, Port: int(binary.BigEndian.Uint16(contactPort))}
 	}
 
-	return &RpcMessage{OpCode: OpCode(opCode),
+	return &RpcMessage{
+			MessageID:      NodeId(messageId),
+			OpCode:         OpCode(opCode),
 			SelfNodeId:     NodeId(selfNodeId),
 			Key:            NodeId(key),
 			ValueLength:    valueLength,
@@ -142,32 +176,46 @@ func (network *UDPNetwork) Decode(packet []byte) (*RpcMessage, error) {
 }
 
 // TAkes RpcMessage struct and converts it to raw UDP bytes
-func (network *UDPNetwork) Encode(message RpcMessage) []byte {
-	var encodedMessage []byte
+func (network *UDPNetwork) Encode(message *RpcMessage) []byte {
+	encodedMessage := make([]byte, 0)
 	var err error
 
-	encodedMessage = binary.BigEndian.AppendUint64(encodedMessage, uint64(message.OpCode))
+	encodedMessage, err = binary.Append(encodedMessage, binary.BigEndian, message.MessageID)
+	if err != nil {
+		log.Fatalf("failed encoding messageId: %v", err)
+	}
+
+	encodedMessage, err = binary.Append(encodedMessage, binary.BigEndian, message.OpCode)
+	if err != nil {
+		log.Fatalf("failed encoding opCode: %v", err)
+	}
 
 	encodedMessage, err = binary.Append(encodedMessage, binary.BigEndian, message.SelfNodeId)
 	if err != nil {
-		return nil
+		log.Fatalf("failed encoding NodeId: %v", err)
 	}
 
 	encodedMessage, err = binary.Append(encodedMessage, binary.BigEndian, message.Key)
 	if err != nil {
-		return nil
+		log.Fatalf("failed encoding Key: %v", err)
 	}
 
-	encodedMessage = binary.BigEndian.AppendUint64(encodedMessage, uint64(message.ValueLength))
+	encodedMessage, err = binary.Append(encodedMessage, binary.BigEndian, message.ValueLength)
+	if err != nil {
+		log.Fatalf("failed encoding value length: %v", err)
+	}
 
 	encodedMessage = append(encodedMessage, message.Value...)
 
-	encodedMessage = binary.BigEndian.AppendUint64(encodedMessage, uint64(message.ContactsLength))
+	encodedMessage, err = binary.Append(encodedMessage, binary.BigEndian, message.ContactsLength)
+	if err != nil {
+		log.Fatalf("failed encoding contacts length: %v", err)
+	}
 
 	for _, contact := range message.Contacts {
 		encodedMessage, err = binary.Append(encodedMessage, binary.BigEndian, contact.ID)
 		if err != nil {
-			return nil
+			log.Fatalf("failed encoding contact Id: %v", err)
 		}
 
 		encodedMessage = append(encodedMessage, contact.IP.To4()...)
@@ -183,31 +231,52 @@ func (network *UDPNetwork) Listen() error {
 	for {
 		buf := make([]byte, MaxUDPPacketSize)
 		n, addr, err := network.conn.ReadFromUDP(buf)
-
 		if err != nil {
-			return fmt.Errorf("error reading from UDP: %v", err)
+			log.Fatalf("error reading from UDP: %v", err)
 		}
-		if _, exists := network.remoteConnections.Load(addr.String()); !exists {
-			network.remoteConnections.Store(addr.String(), &addr)
-		}
-
 		data := buf[:n]
-
 		message, err := network.Decode(data)
 		if err != nil {
-			fmt.Printf("failed to decode UDP packet from %v: %v\n", addr, err)
+			log.Printf("failed to decode UDP packet from %v: %v\n", addr, err)
 			continue
 		}
+		log.Printf("received a message from: %v, message: %v", addr, message)
 
 		switch message.OpCode {
 		case Ping:
 			network.rpcHandler.HandlePing(Contact{ID: message.SelfNodeId, IP: addr.IP, Port: addr.Port})
 		case FindNodeRequest:
-			network.rpcHandler.HandleFindNode(Contact{ID: message.SelfNodeId, IP: addr.IP, Port: addr.Port}, message.Key)
+			contacts := network.rpcHandler.HandleFindNode(Contact{ID: message.SelfNodeId, IP: addr.IP, Port: addr.Port}, message.Key)
+			findNodeResponse := &RpcMessage{
+				MessageID:      message.MessageID,
+				OpCode:         FindNodeResponse,
+				SelfNodeId:     message.SelfNodeId,
+				Key:            message.Key,
+				ValueLength:    0,
+				Value:          nil,
+				ContactsLength: uint64(len(contacts)),
+				Contacts:       contacts,
+			}
+			_, err := network.conn.WriteToUDP(network.Encode(findNodeResponse), addr)
+			if err != nil {
+				log.Fatalf("error sending a response to addr: %v, : %v", addr, err)
+			}
+			log.Printf("sent a message: %v to addr: %v", findNodeResponse, addr)
+
 		case FindValueRequest:
 			network.rpcHandler.HandleFindValue(Contact{ID: message.SelfNodeId, IP: addr.IP, Port: addr.Port}, message.Key)
 		case StoreRequest:
 			network.rpcHandler.HandleStore(Contact{ID: message.SelfNodeId, IP: addr.IP, Port: addr.Port}, message.Key, message.Value)
+		case FindNodeResponse:
+			network.mu.Lock()
+			responseChannel, exists := network.pending[message.MessageID]
+			network.mu.Unlock()
+
+			if !exists {
+				fmt.Printf("request channel is closed :%v", err)
+				continue
+			}
+			responseChannel <- message.Contacts
 		}
 	}
 }
