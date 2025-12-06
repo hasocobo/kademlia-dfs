@@ -64,6 +64,7 @@ func (cs *ContactSorter) Print() {
 // sort.Interface methods
 
 func (cs *ContactSorter) Len() int { return len(cs.Contacts) }
+
 func (cs *ContactSorter) Swap(i, j int) {
 	cs.Contacts[i], cs.Contacts[j] = cs.Contacts[j], cs.Contacts[i]
 }

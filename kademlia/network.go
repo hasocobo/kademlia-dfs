@@ -44,17 +44,18 @@ func (network *UDPNetwork) FindNode(requester Contact, recipient Contact, target
 	network.mu.Lock()
 	network.pending[rpcMessage.MessageID] = resultsChan
 	network.mu.Unlock()
+	log.Printf("[SEND] FindNodeRequest to=%s key=%s", truncateID(recipient.ID), truncateID(targetID))
 	msgToSend := network.Encode(rpcMessage)
 	_, err := network.conn.WriteToUDP(msgToSend, &net.UDPAddr{IP: recipient.IP, Port: recipient.Port})
 	if err != nil {
-		panic(fmt.Errorf("error writing to udp: %v", err))
+		return nil, fmt.Errorf("error writing to udp: %v", err)
 	}
 	// Times out if after 500 ms
 	select {
 	case contacts := <-resultsChan:
 		return contacts, nil
 	case <-time.After(time.Millisecond * 5000):
-		log.Println("timeout waiting for FindNode response")
+		log.Printf("[TIMEOUT] FindNodeRequest to=%s key=%s", truncateID(recipient.ID), truncateID(targetID))
 		return nil, fmt.Errorf("timeout waiting for FindNode response")
 	}
 }
@@ -71,7 +72,39 @@ func (network *UDPNetwork) Ping(requster Contact, recipient Contact) error {
 
 // Store implements Network.
 func (network *UDPNetwork) Store(requester Contact, recipient Contact, key NodeId, value []byte) error {
-	panic("unimplemented")
+	resultsChan := make(chan []Contact, 1)
+	rpcMessage := &RpcMessage{
+		MessageID:      NewRandomId(),
+		OpCode:         StoreRequest,
+		SelfNodeId:     requester.ID,
+		Key:            key,
+		ValueLength:    uint64(len(value)),
+		Value:          value,
+		ContactsLength: 0,
+		Contacts:       nil,
+	}
+	network.mu.Lock()
+	network.pending[rpcMessage.MessageID] = resultsChan
+	network.mu.Unlock()
+
+	log.Printf("[SEND] StoreRequest to=%s key=%s valueLen=%d", truncateID(recipient.ID), truncateID(key), len(value))
+
+	msgToSend := network.Encode(rpcMessage)
+	_, err := network.conn.WriteToUDP(msgToSend, &net.UDPAddr{IP: recipient.IP, Port: recipient.Port})
+	if err != nil {
+		return fmt.Errorf("error writing to udp: %v", err)
+	}
+
+	select {
+	case <-time.After(time.Second * 5):
+		log.Printf("[TIMEOUT] StoreRequest to=%s key=%s", truncateID(recipient.ID), truncateID(key))
+		network.mu.Lock()
+		delete(network.pending, rpcMessage.MessageID)
+		network.mu.Unlock()
+		return fmt.Errorf("request timed out: %v", err)
+	case <-resultsChan:
+		return nil
+	}
 }
 
 type RpcHandler interface {
@@ -240,13 +273,13 @@ func (network *UDPNetwork) Listen() error {
 			log.Printf("failed to decode UDP packet from %v: %v\n", addr, err)
 			continue
 		}
-		log.Printf("received a message from: %v, message: %v", addr, message)
-
 		switch message.OpCode {
 		case Ping:
 			network.rpcHandler.HandlePing(Contact{ID: message.SelfNodeId, IP: addr.IP, Port: addr.Port})
 		case FindNodeRequest:
+			log.Printf("[RECV] FindNodeRequest from=%s key=%s", truncateID(message.SelfNodeId), truncateID(message.Key))
 			contacts := network.rpcHandler.HandleFindNode(Contact{ID: message.SelfNodeId, IP: addr.IP, Port: addr.Port}, message.Key)
+			// TODO: remove unnecessary fields like key, they don't need to be included in the response
 			findNodeResponse := &RpcMessage{
 				MessageID:      message.MessageID,
 				OpCode:         FindNodeResponse,
@@ -259,26 +292,80 @@ func (network *UDPNetwork) Listen() error {
 			}
 			_, err := network.conn.WriteToUDP(network.Encode(findNodeResponse), addr)
 			if err != nil {
-				log.Fatalf("error sending a response to addr: %v, : %v", addr, err)
+				log.Printf("error sending a response to addr: %v, : %v\n", addr, err)
+				continue
 			}
-			log.Printf("sent a message: %v to addr: %v", findNodeResponse, addr)
+			log.Printf("[SEND] FindNodeResponse to=%s contacts=%s", truncateID(message.SelfNodeId), formatContacts(contacts))
 
 		case FindValueRequest:
 			network.rpcHandler.HandleFindValue(Contact{ID: message.SelfNodeId, IP: addr.IP, Port: addr.Port}, message.Key)
 		case StoreRequest:
+			log.Printf("[RECV] StoreRequest from=%s key=%s valueLen=%d", truncateID(message.SelfNodeId), truncateID(message.Key), message.ValueLength)
 			network.rpcHandler.HandleStore(Contact{ID: message.SelfNodeId, IP: addr.IP, Port: addr.Port}, message.Key, message.Value)
-		case FindNodeResponse:
+			storeResponse := &RpcMessage{
+				MessageID:      message.MessageID,
+				OpCode:         StoreResponse,
+				SelfNodeId:     message.SelfNodeId,
+				Key:            message.Key,
+				ValueLength:    0,
+				Value:          nil,
+				ContactsLength: 0,
+				Contacts:       nil,
+			}
+			_, err := network.conn.WriteToUDP(network.Encode(storeResponse), addr)
+			if err != nil {
+				log.Printf("error sending a response to addr: %v, : %v\n", addr, err)
+				continue
+			}
+			log.Printf("[SEND] StoreResponse to=%s key=%s", truncateID(message.SelfNodeId), truncateID(message.Key))
+		case StoreResponse:
+			log.Printf("[RECV] StoreResponse from=%s key=%s", truncateID(message.SelfNodeId), truncateID(message.Key))
 			network.mu.Lock()
 			responseChannel, exists := network.pending[message.MessageID]
 			network.mu.Unlock()
 
 			if !exists {
-				fmt.Printf("request channel is closed :%v", err)
+				fmt.Printf("request channel is closed :%v\n", err)
+				continue
+			}
+			responseChannel <- []Contact{} // no need for contacts since store response don't need them
+		case FindNodeResponse:
+			log.Printf("[RECV] FindNodeResponse from=%s contacts=%s", truncateID(message.SelfNodeId), formatContacts(message.Contacts))
+			network.mu.Lock()
+			responseChannel, exists := network.pending[message.MessageID]
+			network.mu.Unlock()
+
+			if !exists {
+				fmt.Printf("request channel is closed :%v\n", err)
 				continue
 			}
 			responseChannel <- message.Contacts
 		}
 	}
+}
+
+// Helper to truncate NodeId for logging
+func truncateID(id NodeId) string {
+	s := id.String()
+	if len(s) > 8 {
+		return s[:8] + "..."
+	}
+	return s
+}
+
+// Helper to format contacts for logging
+func formatContacts(contacts []Contact) string {
+	if len(contacts) == 0 {
+		return "[]"
+	}
+	result := "["
+	for i, c := range contacts {
+		if i > 0 {
+			result += ", "
+		}
+		result += truncateID(c.ID)
+	}
+	return result + "]"
 }
 
 // Simulation network implements Network to test the core RPC calls without the complexity of UDP yet

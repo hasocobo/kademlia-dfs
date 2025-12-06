@@ -1,8 +1,11 @@
 package main
 
 import (
+	"encoding/json"
 	"flag"
+	"log"
 	"net"
+	"net/http"
 
 	kademliadfs "github.com/hasocobo/kademlia-dfs/kademlia"
 )
@@ -42,6 +45,30 @@ func main() {
 
 	if !isBootstrapNode {
 		node.Join(kademliadfs.Contact{IP: bootstrapNodeIpAddress, Port: bootstrapNodePort, ID: kademliadfs.NodeId{}})
+	}
+
+	type KV struct {
+		Key   string
+		Value []byte
+	}
+	if isBootstrapNode {
+		go func() {
+			http.HandleFunc("/kv", func(w http.ResponseWriter, r *http.Request) {
+				if r.Method == "PUT" {
+					var kv KV
+					log.Println("handling a put request")
+					json.NewDecoder(r.Body).Decode(&kv)
+					err := node.Put(kv.Key, kv.Value)
+					if err != nil {
+						log.Printf("error putting key value pair: %v \n", err)
+						w.WriteHeader(500)
+					}
+					w.WriteHeader(201)
+				}
+			})
+			log.Println("listening on 127.0.0.1:8080")
+			log.Fatal(http.ListenAndServe("127.0.0.1:8080", nil))
+		}()
 	}
 	select {} // Block main to keep the program alive to run goroutines
 }
