@@ -24,6 +24,7 @@ type Node struct {
 type LookupResult struct {
 	NodeId   NodeId
 	Contacts []Contact
+	Value    []byte
 }
 
 // type ConcurrentQuery func(chan LookupResult)
@@ -110,7 +111,7 @@ func (node *Node) Lookup(targetID NodeId) []Contact {
 			log.Fatalf("error finding node: %v", err)
 			return
 		}
-		c <- LookupResult{nodeToQuery.ID, result}
+		c <- LookupResult{NodeId: nodeToQuery.ID, Contacts: result}
 	}
 
 	findNextUnqueriedContact := func(contactList []Contact, queryMap map[NodeId]bool) (*Contact, error) {
@@ -188,12 +189,124 @@ lookupLoop:
 	return shortlist.Contacts[:k]
 }
 
+func (node *Node) ValueLookup(key NodeId) (contacts []Contact, value []byte, err error) {
+	resultsChan := make(chan LookupResult, 1)
+
+	// Grabs a few nodes from its own buckets for initial population
+	shortlist := NewContactSorter(key)
+	shortlist.Add(node.RoutingTable.FindClosest(key, maxConcurrentRequests)...)
+
+	// Number of current concurrent requests
+	inFlightCounter := 0
+
+	query := func(c chan LookupResult, nodeToQuery Contact) error {
+		value, contacts, err := node.Network.FindValue(node.Self, nodeToQuery, key)
+		if err != nil {
+			log.Fatalf("error finding node: %v", err)
+			return fmt.Errorf("error finding value: %v", err)
+		}
+		c <- LookupResult{NodeId: nodeToQuery.ID, Contacts: contacts, Value: value}
+		return nil
+	}
+
+	findNextUnqueriedContact := func(contactList []Contact, queryMap map[NodeId]bool) (*Contact, error) {
+		for _, contact := range contactList {
+			if queryMap[contact.ID] {
+				continue
+			}
+			queryMap[contact.ID] = true
+			return &contact, nil
+		}
+		return nil, fmt.Errorf("not found any contact")
+	}
+
+	if len(shortlist.Contacts) == 0 {
+		return nil, nil, fmt.Errorf("found no contacts in buckets")
+	}
+
+	sort.Sort(shortlist)
+
+	queried := make(map[NodeId]bool, k)
+
+	moreNodesToQuery := true
+	// Then queries these nodes and keeps populating nodes to query
+lookupLoop:
+	for moreNodesToQuery {
+		for inFlightCounter <= maxConcurrentRequests {
+			nodeToQuery, err := findNextUnqueriedContact(shortlist.Contacts, queried)
+			if err != nil {
+				break
+			}
+			inFlightCounter++
+			go query(resultsChan, *nodeToQuery)
+		}
+
+		select {
+		case <-time.After(time.Millisecond * 10000):
+			moreNodesToQuery = false
+			fmt.Println("query request timed out")
+			break lookupLoop
+		case result := <-resultsChan:
+			inFlightCounter--
+			if result.Value != nil {
+				log.Println("found the value")
+				return nil, result.Value, nil
+			}
+
+			for _, contact := range result.Contacts {
+				node.RoutingTable.Update(contact)
+			}
+			// If the newly queried contact doesn't know a closer node to the target id, exit the loop
+			if len(result.Contacts) == 0 ||
+				XorDistance(shortlist.Contacts[0].ID, key).Cmp(XorDistance(result.Contacts[0].ID, key)) == -1 {
+				// If there are still concurrent requests at the moment, don't immediately break the loop
+				// and keep going
+				if inFlightCounter > 0 {
+					continue
+				}
+				moreNodesToQuery = false
+				break
+			}
+
+			shortlist.Add(result.Contacts...)
+
+			nodeToQuery, err := findNextUnqueriedContact(shortlist.Contacts, queried)
+			if err != nil {
+				break
+			}
+
+			inFlightCounter++
+			go query(resultsChan, *nodeToQuery)
+		}
+
+	}
+
+	if len(shortlist.Contacts) < k {
+		return shortlist.Contacts, nil, nil
+	}
+
+	return shortlist.Contacts[:k], nil, nil
+}
+
 func (node *Node) Join(bootstrapNode Contact) error {
 	node.RoutingTable.Update(bootstrapNode)
 
 	node.Lookup(node.Self.ID)
 
 	return nil
+}
+
+func (node *Node) Get(key string) ([]byte, error) {
+	hashedKey := sha256.Sum256([]byte(key))
+	_, value, err := node.ValueLookup(hashedKey)
+	if err != nil {
+		return nil, fmt.Errorf("error finding value for key")
+	}
+
+	if value != nil {
+		return value, nil
+	}
+	return nil, nil
 }
 
 func (node *Node) Put(key string, value []byte) error {

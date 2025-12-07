@@ -64,6 +64,22 @@ func main() {
 						w.WriteHeader(500)
 					}
 					w.WriteHeader(201)
+				} else if r.Method == "GET" {
+					var kv KV
+					log.Println("handling a get request")
+					json.NewDecoder(r.Body).Decode(&kv)
+					value, err := node.Get(kv.Key)
+					if err != nil {
+						log.Printf("error putting key value pair: %v \n", err)
+						w.WriteHeader(500)
+					}
+					kv.Value = string(value[:])
+					w.WriteHeader(200)
+					resp, err := json.Marshal(kv)
+					if err != nil {
+						log.Printf("error marshaling key value pair :%v", err)
+					}
+					w.Write(resp)
 				}
 			})
 			log.Println("listening on 127.0.0.1:8080")
