@@ -157,7 +157,8 @@ lookupLoop:
 				node.RoutingTable.Update(contact)
 			}
 			// If the newly queried contact doesn't know a closer node to the target id, exit the loop
-			if XorDistance(shortlist.Contacts[0].ID, targetID).Cmp(XorDistance(result.Contacts[0].ID, targetID)) == -1 {
+			if len(result.Contacts) == 0 ||
+				XorDistance(shortlist.Contacts[0].ID, targetID).Cmp(XorDistance(result.Contacts[0].ID, targetID)) == -1 {
 				// If there are still concurrent requests at the moment, don't immediately break the loop
 				// and keep going
 				if inFlightCounter > 0 {

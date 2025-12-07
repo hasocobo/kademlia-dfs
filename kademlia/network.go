@@ -53,7 +53,13 @@ func (network *UDPNetwork) FindNode(requester Contact, recipient Contact, target
 	// Times out if after 500 ms
 	select {
 	case contacts := <-resultsChan:
-		return contacts, nil
+		var filteredContacts []Contact
+		for _, contact := range contacts {
+			if contact.ID != requester.ID {
+				filteredContacts = append(filteredContacts, contact)
+			}
+		}
+		return filteredContacts, nil
 	case <-time.After(time.Millisecond * 5000):
 		log.Printf("[TIMEOUT] FindNodeRequest to=%s port=%d key=%s", truncateID(recipient.ID), recipient.Port, truncateID(targetID))
 		return nil, fmt.Errorf("timeout waiting for FindNode response")
