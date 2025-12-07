@@ -14,7 +14,7 @@ const (
 )
 
 type Network interface {
-	Ping(requster, recipient Contact) error
+	Ping(requester, recipient Contact) error
 	FindNode(requester, recipient Contact, targetID NodeId) ([]Contact, error)
 	FindValue(requester, recipient Contact, key NodeId) ([]byte, []Contact, error)
 	Store(requester, recipient Contact, key NodeId, value []byte) error
@@ -50,7 +50,7 @@ func (network *UDPNetwork) FindNode(requester Contact, recipient Contact, target
 	if err != nil {
 		return nil, fmt.Errorf("error writing to udp: %v", err)
 	}
-	// Times out if after 500 ms
+	// Times out if after 5000 ms
 	select {
 	case contacts := <-resultsChan:
 		var filteredContacts []Contact
@@ -72,8 +72,36 @@ func (network *UDPNetwork) FindValue(requester Contact, recipient Contact, key N
 }
 
 // Ping implements Network.
-func (network *UDPNetwork) Ping(requster Contact, recipient Contact) error {
-	panic("unimplemented")
+func (network *UDPNetwork) Ping(requester Contact, recipient Contact) error {
+	resultsChan := make(chan []Contact, 1)
+	rpcMessage := &RpcMessage{
+		MessageID:      NewRandomId(),
+		OpCode:         Ping,
+		SelfNodeId:     requester.ID,
+		Key:            NodeId{},
+		ValueLength:    0,
+		Value:          nil,
+		ContactsLength: 0,
+		Contacts:       nil,
+	}
+
+	network.mu.Lock()
+	network.pending[rpcMessage.MessageID] = resultsChan
+	network.mu.Unlock()
+	log.Printf("[SEND] Ping to=%s port=%v", truncateID(recipient.ID), recipient.Port)
+	msgToSend := network.Encode(rpcMessage)
+	_, err := network.conn.WriteToUDP(msgToSend, &net.UDPAddr{IP: recipient.IP, Port: recipient.Port})
+	if err != nil {
+		return fmt.Errorf("error writing to udp: %v", err)
+	}
+
+	select {
+	case <-resultsChan:
+		return nil
+	case <-time.After(time.Millisecond * 5000):
+		log.Printf("[TIMEOUT] Ping to=%s port=%d", truncateID(recipient.ID), recipient.Port)
+		return fmt.Errorf("timeout waiting for Pong")
+	}
 }
 
 // Store implements Network.
@@ -281,7 +309,25 @@ func (network *UDPNetwork) Listen() error {
 		}
 		switch message.OpCode {
 		case Ping:
+			log.Printf("[RECV] Ping from=%s port=%d", truncateID(message.SelfNodeId), addr.Port)
 			network.rpcHandler.HandlePing(Contact{ID: message.SelfNodeId, IP: addr.IP, Port: addr.Port})
+			findNodeResponse := &RpcMessage{
+				MessageID:      message.MessageID,
+				OpCode:         Pong,
+				SelfNodeId:     message.SelfNodeId,
+				Key:            message.Key,
+				ValueLength:    0,
+				Value:          nil,
+				ContactsLength: 0,
+				Contacts:       nil,
+			}
+			_, err := network.conn.WriteToUDP(network.Encode(findNodeResponse), addr)
+			if err != nil {
+				log.Printf("error sending a response to addr: %v, : %v\n", addr, err)
+				continue
+			}
+			log.Printf("[SEND] Pong to=%s port=%d", truncateID(message.SelfNodeId), addr.Port)
+
 		case FindNodeRequest:
 			log.Printf("[RECV] FindNodeRequest from=%s port=%d key=%s", truncateID(message.SelfNodeId), addr.Port, truncateID(message.Key))
 			contacts := network.rpcHandler.HandleFindNode(Contact{ID: message.SelfNodeId, IP: addr.IP, Port: addr.Port}, message.Key)
@@ -305,6 +351,7 @@ func (network *UDPNetwork) Listen() error {
 
 		case FindValueRequest:
 			network.rpcHandler.HandleFindValue(Contact{ID: message.SelfNodeId, IP: addr.IP, Port: addr.Port}, message.Key)
+
 		case StoreRequest:
 			log.Printf("[RECV] StoreRequest from=%s port=%d key=%s valueLen=%d", truncateID(message.SelfNodeId), addr.Port, truncateID(message.Key), message.ValueLength)
 			network.rpcHandler.HandleStore(Contact{ID: message.SelfNodeId, IP: addr.IP, Port: addr.Port}, message.Key, message.Value)
@@ -324,6 +371,19 @@ func (network *UDPNetwork) Listen() error {
 				continue
 			}
 			log.Printf("[SEND] StoreResponse to=%s port=%d key=%s", truncateID(message.SelfNodeId), addr.Port, truncateID(message.Key))
+
+		case Pong:
+			log.Printf("[RECV] Pong from=%s port=%d", truncateID(message.SelfNodeId), addr.Port)
+			network.mu.Lock()
+			responseChannel, exists := network.pending[message.MessageID]
+			network.mu.Unlock()
+
+			if !exists {
+				fmt.Printf("request channel is closed :%v\n", err)
+				continue
+			}
+			responseChannel <- []Contact{} // no need for contacts since ping doesn't need them
+
 		case StoreResponse:
 			log.Printf("[RECV] StoreResponse from=%s port=%d key=%s", truncateID(message.SelfNodeId), addr.Port, truncateID(message.Key))
 			network.mu.Lock()
@@ -334,7 +394,8 @@ func (network *UDPNetwork) Listen() error {
 				fmt.Printf("request channel is closed :%v\n", err)
 				continue
 			}
-			responseChannel <- []Contact{} // no need for contacts since store response don't need them
+			responseChannel <- []Contact{} // no need for contacts since store response doesn't need them
+
 		case FindNodeResponse:
 			log.Printf("[RECV] FindNodeResponse from=%s port=%d contacts=%s", truncateID(message.SelfNodeId), addr.Port, formatContacts(message.Contacts))
 			network.mu.Lock()

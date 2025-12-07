@@ -49,7 +49,7 @@ func main() {
 
 	type KV struct {
 		Key   string
-		Value []byte
+		Value string
 	}
 	if isBootstrapNode {
 		go func() {
@@ -58,7 +58,7 @@ func main() {
 					var kv KV
 					log.Println("handling a put request")
 					json.NewDecoder(r.Body).Decode(&kv)
-					err := node.Put(kv.Key, kv.Value)
+					err := node.Put(kv.Key, []byte(kv.Value))
 					if err != nil {
 						log.Printf("error putting key value pair: %v \n", err)
 						w.WriteHeader(500)

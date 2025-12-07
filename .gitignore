@@ -33,4 +33,3 @@ go.work.sum
 
 # Build artifacts
 cmd/kademlia
-
