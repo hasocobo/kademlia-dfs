@@ -6,6 +6,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	_ "net/http/pprof"
 
 	kademliadfs "github.com/hasocobo/kademlia-dfs/kademlia"
 )

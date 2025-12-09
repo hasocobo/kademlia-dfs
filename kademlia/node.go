@@ -108,7 +108,8 @@ func (node *Node) Lookup(targetID NodeId) []Contact {
 	query := func(c chan LookupResult, nodeToQuery Contact) {
 		result, err := node.Network.FindNode(node.Self, nodeToQuery, targetID)
 		if err != nil {
-			log.Fatalf("error finding node: %v", err)
+			log.Printf("error finding node: %v", err)
+			c <- LookupResult{NodeId: nodeToQuery.ID, Contacts: nil}
 			return
 		}
 		c <- LookupResult{NodeId: nodeToQuery.ID, Contacts: result}
@@ -166,14 +167,15 @@ lookupLoop:
 					continue
 				}
 				moreNodesToQuery = false
-				break
+				break lookupLoop
 			}
 
 			shortlist.Add(result.Contacts...)
 
 			nodeToQuery, err := findNextUnqueriedContact(shortlist.Contacts, queried)
 			if err != nil {
-				break
+				log.Print("there are no nodes left to lookup")
+				break lookupLoop
 			}
 
 			inFlightCounter++
@@ -302,7 +304,6 @@ func (node *Node) Get(key string) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("error finding value for key")
 	}
-
 	if value != nil {
 		return value, nil
 	}
