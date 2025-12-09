@@ -31,7 +31,7 @@ func NewRoutingTable(selfID NodeId, ping pingFunc) *RoutingTable {
 func (rt *RoutingTable) Update(c Contact) {
 	idx := rt.GetBucketIndex(rt.SelfID, c.ID)
 
-	// Index is -1 if the contact is itself
+	// index is -1 if the contact is itself
 	if idx == -1 {
 		return
 	}
@@ -50,7 +50,11 @@ func (rt *RoutingTable) Update(c Contact) {
 	// if it's a new contact and the bucket is full
 	if bucket.Contacts.Len() == k {
 		leastRecentlySeenContact := bucket.Contacts.Back().Value.(Contact)
-		if !rt.Ping(leastRecentlySeenContact) {
+		bucket.mu.Unlock()
+		// release the lock before calling ping not to wait for network
+		isAlive := rt.Ping(leastRecentlySeenContact)
+		bucket.mu.Lock()
+		if !isAlive {
 			lruElem := bucket.Contacts.Back()
 			bucket.Contacts.Remove(lruElem)
 			bucket.Contacts.PushFront(c)

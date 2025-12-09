@@ -49,6 +49,13 @@ func (network *UDPNetwork) FindNode(requester Contact, recipient Contact, target
 	network.mu.Lock()
 	network.pending[rpcMessage.MessageID] = resultsChan
 	network.mu.Unlock()
+
+	defer func() {
+		network.mu.Lock()
+		delete(network.pending, rpcMessage.MessageID)
+		network.mu.Unlock()
+	}()
+
 	log.Printf("[SEND] FindNodeRequest to=%s port=%v key=%s", truncateID(recipient.ID), recipient.Port, truncateID(targetID))
 	msgToSend := network.Encode(rpcMessage)
 	_, err := network.conn.WriteToUDP(msgToSend, &net.UDPAddr{IP: recipient.IP, Port: recipient.Port})
@@ -87,6 +94,13 @@ func (network *UDPNetwork) FindValue(requester Contact, recipient Contact, key N
 	network.mu.Lock()
 	network.pending[rpcMessage.MessageID] = resultsChan
 	network.mu.Unlock()
+
+	defer func() {
+		network.mu.Lock()
+		delete(network.pending, rpcMessage.MessageID)
+		network.mu.Unlock()
+	}()
+
 	log.Printf("[SEND] FindValueRequest to=%s port=%v key=%s", truncateID(recipient.ID), recipient.Port, truncateID(key))
 	msgToSend := network.Encode(rpcMessage)
 	_, err := network.conn.WriteToUDP(msgToSend, &net.UDPAddr{IP: recipient.IP, Port: recipient.Port})
@@ -130,6 +144,13 @@ func (network *UDPNetwork) Ping(requester Contact, recipient Contact) error {
 	network.mu.Lock()
 	network.pending[rpcMessage.MessageID] = resultsChan
 	network.mu.Unlock()
+
+	defer func() {
+		network.mu.Lock()
+		delete(network.pending, rpcMessage.MessageID)
+		network.mu.Unlock()
+	}()
+
 	log.Printf("[SEND] Ping to=%s port=%v", truncateID(recipient.ID), recipient.Port)
 	msgToSend := network.Encode(rpcMessage)
 	_, err := network.conn.WriteToUDP(msgToSend, &net.UDPAddr{IP: recipient.IP, Port: recipient.Port})
@@ -163,6 +184,12 @@ func (network *UDPNetwork) Store(requester Contact, recipient Contact, key NodeI
 	network.pending[rpcMessage.MessageID] = resultsChan
 	network.mu.Unlock()
 
+	defer func() {
+		network.mu.Lock()
+		delete(network.pending, rpcMessage.MessageID)
+		network.mu.Unlock()
+	}()
+
 	log.Printf("[SEND] StoreRequest to=%s port=%d key=%s valueLen=%d", truncateID(recipient.ID), recipient.Port, truncateID(key), len(value))
 
 	msgToSend := network.Encode(rpcMessage)
@@ -174,9 +201,6 @@ func (network *UDPNetwork) Store(requester Contact, recipient Contact, key NodeI
 	select {
 	case <-time.After(time.Second * 5):
 		log.Printf("[TIMEOUT] StoreRequest to=%s port=%d key=%s", truncateID(recipient.ID), recipient.Port, truncateID(key))
-		network.mu.Lock()
-		delete(network.pending, rpcMessage.MessageID)
-		network.mu.Unlock()
 		return fmt.Errorf("request timed out: %v", err)
 	case <-resultsChan:
 		return nil
