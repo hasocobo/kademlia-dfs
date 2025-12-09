@@ -12,7 +12,7 @@ import (
 )
 
 func main() {
-	ipPtr := flag.String("ip", "127.0.0.1", "usage: -ip=127.0.0.1")
+	ipPtr := flag.String("ip", "0.0.0.0", "usage: -ip=127.0.0.1")
 	portPtr := flag.Int("port", 9999, "-port=9999")
 	bootstrapNodeIpPtr := flag.String("bootstrap-ip", "127.0.0.1", "usage: -ip=127.0.0.1")
 	bootstrapNodePortPtr := flag.Int("bootstrap-port", 9000, "-port=9000")
@@ -83,8 +83,8 @@ func main() {
 					w.Write(resp)
 				}
 			})
-			log.Println("listening on 127.0.0.1:8080")
-			log.Fatal(http.ListenAndServe("127.0.0.1:8080", nil))
+			log.Println("listening on 0.0.0.0:8080")
+			log.Fatal(http.ListenAndServe("0.0.0.0:8080", nil))
 		}()
 	}
 	select {} // Block main to keep the program alive to run goroutines

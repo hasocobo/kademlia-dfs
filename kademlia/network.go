@@ -389,7 +389,7 @@ func (network *UDPNetwork) Listen() error {
 				log.Printf("error sending a response to addr: %v, : %v\n", addr, err)
 				continue
 			}
-			log.Printf("[SEND] FindNodeResponse to=%s port=%d contacts=%s", truncateID(message.SelfNodeId), addr.Port, formatContacts(contacts))
+			log.Printf("[SEND] FindNodeResponse to=%s port=%d ip=%v contacts=%s", truncateID(message.SelfNodeId), addr.Port, addr.IP, formatContacts(contacts))
 
 		case FindValueRequest:
 			log.Printf("[RECV] FindValueRequest from=%s port=%d key=%s valueLen=%d", truncateID(message.SelfNodeId), addr.Port, truncateID(message.Key), message.ValueLength)

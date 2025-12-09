@@ -31,7 +31,10 @@ type LookupResult struct {
 
 func NewNode(id NodeId, ip net.IP, port int, network Network) *Node {
 	contact := Contact{ID: id, IP: ip, Port: port}
-	rt := NewRoutingTable(id, func(c Contact) bool { return true })
+	rt := NewRoutingTable(id, func(recipient Contact) bool {
+		err := network.Ping(contact, recipient)
+		return err == nil
+	})
 	storage := make(map[NodeId][]byte)
 
 	return &Node{Self: contact, RoutingTable: rt, Storage: storage, Network: network}
@@ -237,7 +240,7 @@ lookupLoop:
 		for inFlightCounter <= maxConcurrentRequests {
 			nodeToQuery, err := findNextUnqueriedContact(shortlist.Contacts, queried)
 			if err != nil {
-				break
+				break lookupLoop
 			}
 			inFlightCounter++
 			go query(resultsChan, *nodeToQuery)
@@ -267,14 +270,14 @@ lookupLoop:
 					continue
 				}
 				moreNodesToQuery = false
-				break
+				break lookupLoop
 			}
 
 			shortlist.Add(result.Contacts...)
 
 			nodeToQuery, err := findNextUnqueriedContact(shortlist.Contacts, queried)
 			if err != nil {
-				break
+				break lookupLoop
 			}
 
 			inFlightCounter++

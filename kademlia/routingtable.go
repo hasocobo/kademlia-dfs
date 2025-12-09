@@ -49,7 +49,8 @@ func (rt *RoutingTable) Update(c Contact) {
 	}
 	// if it's a new contact and the bucket is full
 	if bucket.Contacts.Len() == k {
-		if !rt.Ping(bucket.Contacts.Back().Value.(Contact)) {
+		leastRecentlySeenContact := bucket.Contacts.Back().Value.(Contact)
+		if !rt.Ping(leastRecentlySeenContact) {
 			lruElem := bucket.Contacts.Back()
 			bucket.Contacts.Remove(lruElem)
 			bucket.Contacts.PushFront(c)
@@ -62,7 +63,7 @@ func (rt *RoutingTable) Update(c Contact) {
 	bucket.Contacts.PushFront(c)
 }
 
-type pingFunc func(Contact) bool
+type pingFunc func(recipient Contact) bool
 
 /*
 We dump all of the contacts from each bucket into the contact sorter and
