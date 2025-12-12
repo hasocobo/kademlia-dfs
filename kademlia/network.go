@@ -10,7 +10,9 @@ import (
 )
 
 const (
-	MaxUDPPacketSize = 65535
+	MaxUDPPacketSize  = 65535
+	packetBufferLimit = 2048 // how many packets can wait in buffer
+	workerPoolSize    = 32
 )
 
 type Network interface {
@@ -25,12 +27,40 @@ type UDPNetwork struct {
 	pending    map[NodeId]chan rpcResponse
 	rpcHandler RpcHandler
 
-	mu sync.Mutex
+	requestQueue chan UDPRequest
+	mu           sync.Mutex
+}
+
+type UDPRequest struct {
+	message *RpcMessage
+	address *net.UDPAddr
 }
 
 type rpcResponse struct {
 	Contacts []Contact
 	Value    []byte
+}
+
+func NewUDPNetwork(ip net.IP, port int) (*UDPNetwork, error) {
+	udpConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: ip, Port: port})
+	if err != nil {
+		return nil, fmt.Errorf("Error creating UDP listener: %v", err)
+	}
+
+	log.Printf("Listening on %v\n", udpConn.LocalAddr().String())
+
+	udpNetwork := &UDPNetwork{
+		conn:         udpConn,
+		pending:      make(map[NodeId]chan rpcResponse),
+		requestQueue: make(chan UDPRequest, packetBufferLimit),
+	}
+
+	// create n=workerPoolSize workers
+	for i := 0; i < workerPoolSize; i++ {
+		go udpNetwork.requestHandlerWorker()
+	}
+
+	return udpNetwork, nil
 }
 
 // FindNode implements Network.
@@ -55,7 +85,6 @@ func (network *UDPNetwork) FindNode(requester Contact, recipient Contact, target
 		delete(network.pending, rpcMessage.MessageID)
 		network.mu.Unlock()
 	}()
-
 	log.Printf("[SEND] FindNodeRequest to=%s port=%v key=%s", truncateID(recipient.ID), recipient.Port, truncateID(targetID))
 	msgToSend := network.Encode(rpcMessage)
 	_, err := network.conn.WriteToUDP(msgToSend, &net.UDPAddr{IP: recipient.IP, Port: recipient.Port})
@@ -239,18 +268,6 @@ const (
 	StoreResponse
 )
 
-func NewUDPNetwork(ip net.IP, port int) *UDPNetwork {
-	udpConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: ip, Port: port})
-	if err != nil {
-		panic(fmt.Sprintf("Error creating UDP listener: %v", err))
-	}
-
-	fmt.Printf("Listening on %v", udpConn.LocalAddr().String())
-	fmt.Println()
-
-	return &UDPNetwork{conn: udpConn, pending: make(map[NodeId]chan rpcResponse)}
-}
-
 func (network *UDPNetwork) SetHandler(rpcHandler RpcHandler) {
 	network.rpcHandler = rpcHandler
 }
@@ -359,6 +376,149 @@ func (network *UDPNetwork) Encode(message *RpcMessage) []byte {
 	return encodedMessage
 }
 
+func (network *UDPNetwork) requestHandlerWorker() {
+	for {
+		select {
+		case request := <-network.requestQueue:
+			network.handleIncomingRequest(request.message, request.address)
+		}
+		// TODO: add context.timeout
+	}
+}
+
+func (network *UDPNetwork) handleIncomingRequest(message *RpcMessage, addr *net.UDPAddr) {
+	switch message.OpCode {
+	case Ping:
+		log.Printf("[RECV] Ping from=%s port=%d", truncateID(message.SelfNodeId), addr.Port)
+		network.rpcHandler.HandlePing(Contact{ID: message.SelfNodeId, IP: addr.IP, Port: addr.Port})
+		pingResponse := &RpcMessage{
+			MessageID:      message.MessageID,
+			OpCode:         Pong,
+			SelfNodeId:     message.SelfNodeId,
+			Key:            message.Key,
+			ValueLength:    0,
+			Value:          nil,
+			ContactsLength: 0,
+			Contacts:       nil,
+		}
+		_, err := network.conn.WriteToUDP(network.Encode(pingResponse), addr)
+		if err != nil {
+			log.Printf("error sending a response to addr: %v, : %v\n", addr, err)
+			return
+		}
+		log.Printf("[SEND] Pong to=%s port=%d", truncateID(message.SelfNodeId), addr.Port)
+
+	case FindNodeRequest:
+		log.Printf("[RECV] FindNodeRequest from=%s port=%d key=%s", truncateID(message.SelfNodeId), addr.Port, truncateID(message.Key))
+		contacts := network.rpcHandler.HandleFindNode(Contact{ID: message.SelfNodeId, IP: addr.IP, Port: addr.Port}, message.Key)
+		// TODO: remove unnecessary fields like key, they don't need to be included in the response
+		findNodeResponse := &RpcMessage{
+			MessageID:      message.MessageID,
+			OpCode:         FindNodeResponse,
+			SelfNodeId:     message.SelfNodeId,
+			Key:            message.Key,
+			ValueLength:    0,
+			Value:          nil,
+			ContactsLength: uint64(len(contacts)),
+			Contacts:       contacts,
+		}
+		_, err := network.conn.WriteToUDP(network.Encode(findNodeResponse), addr)
+		if err != nil {
+			log.Printf("error sending a response to addr: %v, : %v\n", addr, err)
+			return
+		}
+		log.Printf("[SEND] FindNodeResponse to=%s port=%d ip=%v contacts=%s", truncateID(message.SelfNodeId), addr.Port, addr.IP, formatContacts(contacts))
+
+	case FindValueRequest:
+		log.Printf("[RECV] FindValueRequest from=%s port=%d key=%s valueLen=%d", truncateID(message.SelfNodeId), addr.Port, truncateID(message.Key), message.ValueLength)
+		value, contacts := network.rpcHandler.HandleFindValue(Contact{ID: message.SelfNodeId, IP: addr.IP, Port: addr.Port}, message.Key)
+		findValueResponse := &RpcMessage{
+			MessageID:      message.MessageID,
+			OpCode:         FindValueResponse,
+			SelfNodeId:     message.SelfNodeId,
+			Key:            message.Key,
+			ValueLength:    uint64(len(value)),
+			Value:          value,
+			ContactsLength: uint64(len(contacts)),
+			Contacts:       contacts,
+		}
+		_, err := network.conn.WriteToUDP(network.Encode(findValueResponse), addr)
+		if err != nil {
+			log.Printf("error sending a response to addr: %v, : %v\n", addr, err)
+			return
+		}
+		log.Printf("[SEND] FindValueResponse to=%s port=%d key=%s valueLen=%v", truncateID(message.SelfNodeId), addr.Port, truncateID(message.Key), findValueResponse.ValueLength)
+
+	case StoreRequest:
+		log.Printf("[RECV] StoreRequest from=%s port=%d key=%s valueLen=%d", truncateID(message.SelfNodeId), addr.Port, truncateID(message.Key), message.ValueLength)
+		network.rpcHandler.HandleStore(Contact{ID: message.SelfNodeId, IP: addr.IP, Port: addr.Port}, message.Key, message.Value)
+		storeResponse := &RpcMessage{
+			MessageID:      message.MessageID,
+			OpCode:         StoreResponse,
+			SelfNodeId:     message.SelfNodeId,
+			Key:            message.Key,
+			ValueLength:    0,
+			Value:          nil,
+			ContactsLength: 0,
+			Contacts:       nil,
+		}
+		_, err := network.conn.WriteToUDP(network.Encode(storeResponse), addr)
+		if err != nil {
+			log.Printf("error sending a response to addr: %v, : %v\n", addr, err)
+			return
+		}
+		log.Printf("[SEND] StoreResponse to=%s port=%d key=%s", truncateID(message.SelfNodeId), addr.Port, truncateID(message.Key))
+
+	case Pong:
+		log.Printf("[RECV] Pong from=%s port=%d", truncateID(message.SelfNodeId), addr.Port)
+		network.mu.Lock()
+		responseChannel, exists := network.pending[message.MessageID]
+		network.mu.Unlock()
+
+		if !exists {
+			fmt.Printf("request channel for Pong response is closed\n")
+			return
+		}
+		responseChannel <- rpcResponse{} // no need for contacts since ping doesn't need them
+
+	case StoreResponse:
+		log.Printf("[RECV] StoreResponse from=%s port=%d key=%s", truncateID(message.SelfNodeId), addr.Port, truncateID(message.Key))
+		network.mu.Lock()
+		responseChannel, exists := network.pending[message.MessageID]
+		network.mu.Unlock()
+
+		if !exists {
+			fmt.Printf("request channel for StoreResponse is closed\n")
+			return
+		}
+		responseChannel <- rpcResponse{} // no need for contacts since store response doesn't need them
+
+	case FindNodeResponse:
+		log.Printf("[RECV] FindNodeResponse from=%s port=%d contacts=%s", truncateID(message.SelfNodeId), addr.Port, formatContacts(message.Contacts))
+		network.mu.Lock()
+		responseChannel, exists := network.pending[message.MessageID]
+		network.mu.Unlock()
+
+		if !exists {
+			fmt.Printf("request channel FindNodeReponse is closed\n")
+			return
+		}
+		responseChannel <- rpcResponse{Contacts: message.Contacts}
+
+	case FindValueResponse:
+		log.Printf("[RECV] FindValueResponse from=%s port=%d contacts=%s", truncateID(message.SelfNodeId), addr.Port, formatContacts(message.Contacts))
+		network.mu.Lock()
+		responseChannel, exists := network.pending[message.MessageID]
+		network.mu.Unlock()
+		if !exists {
+			fmt.Printf("request channel for FindValueResponse is closed \n")
+			return
+		}
+		responseChannel <- rpcResponse{Contacts: message.Contacts, Value: message.Value}
+
+	}
+}
+
 func (network *UDPNetwork) Listen() error {
 	defer network.conn.Close()
 	for {
@@ -368,141 +528,13 @@ func (network *UDPNetwork) Listen() error {
 			log.Fatalf("error reading from UDP: %v", err)
 		}
 		data := buf[:n]
-		message, err := network.Decode(data)
+		decodedMessage, err := network.Decode(data)
 		if err != nil {
 			log.Printf("failed to decode UDP packet from %v: %v\n", addr, err)
 			continue
 		}
-		switch message.OpCode {
-		case Ping:
-			log.Printf("[RECV] Ping from=%s port=%d", truncateID(message.SelfNodeId), addr.Port)
-			network.rpcHandler.HandlePing(Contact{ID: message.SelfNodeId, IP: addr.IP, Port: addr.Port})
-			pingResponse := &RpcMessage{
-				MessageID:      message.MessageID,
-				OpCode:         Pong,
-				SelfNodeId:     message.SelfNodeId,
-				Key:            message.Key,
-				ValueLength:    0,
-				Value:          nil,
-				ContactsLength: 0,
-				Contacts:       nil,
-			}
-			_, err := network.conn.WriteToUDP(network.Encode(pingResponse), addr)
-			if err != nil {
-				log.Printf("error sending a response to addr: %v, : %v\n", addr, err)
-				continue
-			}
-			log.Printf("[SEND] Pong to=%s port=%d", truncateID(message.SelfNodeId), addr.Port)
 
-		case FindNodeRequest:
-			log.Printf("[RECV] FindNodeRequest from=%s port=%d key=%s", truncateID(message.SelfNodeId), addr.Port, truncateID(message.Key))
-			contacts := network.rpcHandler.HandleFindNode(Contact{ID: message.SelfNodeId, IP: addr.IP, Port: addr.Port}, message.Key)
-			// TODO: remove unnecessary fields like key, they don't need to be included in the response
-			findNodeResponse := &RpcMessage{
-				MessageID:      message.MessageID,
-				OpCode:         FindNodeResponse,
-				SelfNodeId:     message.SelfNodeId,
-				Key:            message.Key,
-				ValueLength:    0,
-				Value:          nil,
-				ContactsLength: uint64(len(contacts)),
-				Contacts:       contacts,
-			}
-			_, err := network.conn.WriteToUDP(network.Encode(findNodeResponse), addr)
-			if err != nil {
-				log.Printf("error sending a response to addr: %v, : %v\n", addr, err)
-				continue
-			}
-			log.Printf("[SEND] FindNodeResponse to=%s port=%d ip=%v contacts=%s", truncateID(message.SelfNodeId), addr.Port, addr.IP, formatContacts(contacts))
-
-		case FindValueRequest:
-			log.Printf("[RECV] FindValueRequest from=%s port=%d key=%s valueLen=%d", truncateID(message.SelfNodeId), addr.Port, truncateID(message.Key), message.ValueLength)
-			value, contacts := network.rpcHandler.HandleFindValue(Contact{ID: message.SelfNodeId, IP: addr.IP, Port: addr.Port}, message.Key)
-			findValueResponse := &RpcMessage{
-				MessageID:      message.MessageID,
-				OpCode:         FindValueResponse,
-				SelfNodeId:     message.SelfNodeId,
-				Key:            message.Key,
-				ValueLength:    uint64(len(value)),
-				Value:          value,
-				ContactsLength: uint64(len(contacts)),
-				Contacts:       contacts,
-			}
-			_, err := network.conn.WriteToUDP(network.Encode(findValueResponse), addr)
-			if err != nil {
-				log.Printf("error sending a response to addr: %v, : %v\n", addr, err)
-				continue
-			}
-			log.Printf("[SEND] FindValueResponse to=%s port=%d key=%s valueLen=%v", truncateID(message.SelfNodeId), addr.Port, truncateID(message.Key), findValueResponse.ValueLength)
-
-		case StoreRequest:
-			log.Printf("[RECV] StoreRequest from=%s port=%d key=%s valueLen=%d", truncateID(message.SelfNodeId), addr.Port, truncateID(message.Key), message.ValueLength)
-			network.rpcHandler.HandleStore(Contact{ID: message.SelfNodeId, IP: addr.IP, Port: addr.Port}, message.Key, message.Value)
-			storeResponse := &RpcMessage{
-				MessageID:      message.MessageID,
-				OpCode:         StoreResponse,
-				SelfNodeId:     message.SelfNodeId,
-				Key:            message.Key,
-				ValueLength:    0,
-				Value:          nil,
-				ContactsLength: 0,
-				Contacts:       nil,
-			}
-			_, err := network.conn.WriteToUDP(network.Encode(storeResponse), addr)
-			if err != nil {
-				log.Printf("error sending a response to addr: %v, : %v\n", addr, err)
-				continue
-			}
-			log.Printf("[SEND] StoreResponse to=%s port=%d key=%s", truncateID(message.SelfNodeId), addr.Port, truncateID(message.Key))
-
-		case Pong:
-			log.Printf("[RECV] Pong from=%s port=%d", truncateID(message.SelfNodeId), addr.Port)
-			network.mu.Lock()
-			responseChannel, exists := network.pending[message.MessageID]
-			network.mu.Unlock()
-
-			if !exists {
-				fmt.Printf("request channel is closed :%v\n", err)
-				continue
-			}
-			responseChannel <- rpcResponse{} // no need for contacts since ping doesn't need them
-
-		case StoreResponse:
-			log.Printf("[RECV] StoreResponse from=%s port=%d key=%s", truncateID(message.SelfNodeId), addr.Port, truncateID(message.Key))
-			network.mu.Lock()
-			responseChannel, exists := network.pending[message.MessageID]
-			network.mu.Unlock()
-
-			if !exists {
-				fmt.Printf("request channel is closed :%v\n", err)
-				continue
-			}
-			responseChannel <- rpcResponse{} // no need for contacts since store response doesn't need them
-
-		case FindNodeResponse:
-			log.Printf("[RECV] FindNodeResponse from=%s port=%d contacts=%s", truncateID(message.SelfNodeId), addr.Port, formatContacts(message.Contacts))
-			network.mu.Lock()
-			responseChannel, exists := network.pending[message.MessageID]
-			network.mu.Unlock()
-
-			if !exists {
-				fmt.Printf("request channel is closed :%v\n", err)
-				continue
-			}
-			responseChannel <- rpcResponse{Contacts: message.Contacts}
-
-		case FindValueResponse:
-			log.Printf("[RECV] FindValueResponse from=%s port=%d contacts=%s", truncateID(message.SelfNodeId), addr.Port, formatContacts(message.Contacts))
-			network.mu.Lock()
-			responseChannel, exists := network.pending[message.MessageID]
-			network.mu.Unlock()
-			if !exists {
-				fmt.Printf("request channel is closed :%v\n", err)
-				continue
-			}
-			responseChannel <- rpcResponse{Contacts: message.Contacts, Value: message.Value}
-
-		}
+		network.requestQueue <- UDPRequest{message: decodedMessage, address: addr}
 	}
 }
 
