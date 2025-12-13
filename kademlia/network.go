@@ -11,7 +11,7 @@ import (
 
 const (
 	MaxUDPPacketSize  = 65535
-	packetBufferLimit = 2048 // how many packets can wait in buffer
+	packetBufferLimit = 1024 // how many packets can wait in buffer
 	workerPoolSize    = 32
 )
 
@@ -325,6 +325,7 @@ func (network *UDPNetwork) Decode(packet []byte) (*RpcMessage, error) {
 		nil
 }
 
+// TODO: remove replace log.Fatalf with printf and return []byte, error
 // Encode takes RpcMessage struct and converts it to raw UDP bytes
 func (network *UDPNetwork) Encode(message *RpcMessage) []byte {
 	encodedMessage := make([]byte, 0)

@@ -79,8 +79,8 @@ func (node *Node) HandleFindNode(requester Contact, key NodeId) []Contact {
 func (node *Node) HandleFindValue(requester Contact, key NodeId) ([]byte, []Contact) {
 	node.RoutingTable.Update(requester)
 
-	node.mu.RLock()
-	defer node.mu.RUnlock()
+	node.mu.Lock()
+	defer node.mu.Unlock()
 	if value, ok := node.Storage[key]; ok {
 		return value, nil
 	}
@@ -99,7 +99,7 @@ func (node *Node) HandleStore(requester Contact, key NodeId, value []byte) {
 }
 
 func (node *Node) Lookup(targetID NodeId) []Contact {
-	resultsChan := make(chan LookupResult, 1)
+	resultsChan := make(chan LookupResult, maxConcurrentRequests)
 
 	// Grabs a few nodes from its own buckets for initial population
 	shortlist := NewContactSorter(targetID)
@@ -142,7 +142,7 @@ func (node *Node) Lookup(targetID NodeId) []Contact {
 	// Then queries these nodes and keeps populating nodes to query
 lookupLoop:
 	for moreNodesToQuery {
-		for inFlightCounter <= maxConcurrentRequests {
+		for inFlightCounter < maxConcurrentRequests {
 			nodeToQuery, err := findNextUnqueriedContact(shortlist.Contacts, queried)
 			if err != nil {
 				break
@@ -195,7 +195,7 @@ lookupLoop:
 }
 
 func (node *Node) ValueLookup(key NodeId) (contacts []Contact, value []byte, err error) {
-	resultsChan := make(chan LookupResult, 1)
+	resultsChan := make(chan LookupResult, maxConcurrentRequests)
 
 	// Grabs a few nodes from its own buckets for initial population
 	shortlist := NewContactSorter(key)
@@ -237,7 +237,7 @@ func (node *Node) ValueLookup(key NodeId) (contacts []Contact, value []byte, err
 	// Then queries these nodes and keeps populating nodes to query
 lookupLoop:
 	for moreNodesToQuery {
-		for inFlightCounter <= maxConcurrentRequests {
+		for inFlightCounter < maxConcurrentRequests {
 			nodeToQuery, err := findNextUnqueriedContact(shortlist.Contacts, queried)
 			if err != nil {
 				break lookupLoop

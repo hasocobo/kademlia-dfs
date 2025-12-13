@@ -76,14 +76,19 @@ then call its sort function to sort their distance to the targetID
 func (rt *RoutingTable) FindClosest(targetID NodeId, count int) []Contact {
 	// TODO: remove O(n) iteration and replace it with a spiraling(i + 1, i - 1, i + 2, i - 2) lookup
 	// starting from buckets[determinedIndexByXorOfTargetAndSelfId]
+	// maybe use two pointers?
 	contactSorter := NewContactSorter(targetID)
+	tempContacts := make([]Contact, 0)
+
 	for i := range rt.Buckets {
 		bucket := &rt.Buckets[i]
 
 		for e := bucket.Contacts.Front(); e != nil; e = e.Next() {
-			contactSorter.Add(e.Value.(Contact))
+			tempContacts = append(tempContacts, e.Value.(Contact))
 		}
 	}
+
+	contactSorter.Add(tempContacts...)
 
 	if len(contactSorter.Contacts) < count {
 		return contactSorter.Contacts[:]

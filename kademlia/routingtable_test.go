@@ -1,10 +1,28 @@
 package kademliadfs
 
 import (
+	"container/list"
 	"net"
 	"reflect"
 	"testing"
 )
+
+func BenchmarkFindClosest(b *testing.B) {
+	selfID := NewNodeId("test-id")
+	targetId := NewNodeId("target-id")
+	rt := NewRoutingTable(selfID, func(c Contact) bool { return false }) // dummy ping returns false
+	for i := range idLength * 8 {
+		dummyContacts := list.New()
+		for range k {
+			dummyContacts.PushFront(Contact{ID: NewRandomId()})
+		}
+		rt.Buckets[i].Contacts = dummyContacts
+	}
+
+	for b.Loop() {
+		rt.FindClosest(targetId, k)
+	}
+}
 
 func TestRoutingTableUpdate_NewContact_BucketNotFull(t *testing.T) {
 	t.Parallel()
@@ -54,7 +72,6 @@ func TestRoutingTableUpdate_ExistingContact_ShouldMoveToFront(t *testing.T) {
 		t.Fatalf("unexpected contact in bucket %d: got %+v, want %+v",
 			testBucketIndex, rt.Buckets[testBucketIndex].Contacts.Front().Value, existingContact)
 	}
-
 }
 
 func TestRoutingTableUpdate_NewContact_BucketFull_PingFails_ShouldReplaceExisting(t *testing.T) {

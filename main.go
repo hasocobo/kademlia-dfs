@@ -12,9 +12,9 @@ import (
 )
 
 func main() {
-	ipPtr := flag.String("ip", "0.0.0.0", "usage: -ip=127.0.0.1")
+	ipPtr := flag.String("ip", "127.0.0.1", "usage: -ip=127.0.0.1")
 	portPtr := flag.Int("port", 9999, "-port=9999")
-	bootstrapNodeIpPtr := flag.String("bootstrap-ip", "127.0.0.1", "usage: -ip=127.0.0.1")
+	bootstrapNodeIpPtr := flag.String("bootstrap-ip", "0.0.0.0", "usage: -ip=0.0.0.0")
 	bootstrapNodePortPtr := flag.Int("bootstrap-port", 9000, "-port=9000")
 	isBootstrapNodePtr := flag.Bool("is-bootstrap", false, "is-bootsrap=false")
 	flag.Parse()
@@ -32,7 +32,10 @@ func main() {
 		udpIp = bootstrapNodeIpAddress
 	}
 
-	udpNetwork := kademliadfs.NewUDPNetwork(udpIp, udpPort)
+	udpNetwork, err := kademliadfs.NewUDPNetwork(udpIp, udpPort)
+	if err != nil {
+		log.Fatal(err)
+	}
 	var node *kademliadfs.Node
 
 	if isBootstrapNode {
