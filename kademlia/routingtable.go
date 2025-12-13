@@ -97,7 +97,5 @@ func (rt *RoutingTable) FindClosest(targetID NodeId, count int) []Contact {
 }
 
 func (rt *RoutingTable) GetBucketIndex(selfID, targetID NodeId) int {
-	dist := XorDistance(selfID, targetID)
-
-	return dist.BitLen() - 1
+	return XorDistance(selfID, targetID)
 }

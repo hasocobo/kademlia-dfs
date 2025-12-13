@@ -1,8 +1,6 @@
 package kademliadfs
 
-import (
-	"math/big"
-)
+import "math/bits"
 
 /*
 We use idLength = 32 to match the 32 bytes produced by SHA-256 hashes.
@@ -17,8 +15,18 @@ const (
 	maxConcurrentRequests = 3 // Standard concurrency parameter (alpha) for Kademlia node lookup
 )
 
-func XorDistance(a, b NodeId) *big.Int {
-	ai := new(big.Int).SetBytes(a[:])
-	bi := new(big.Int).SetBytes(b[:])
-	return new(big.Int).Xor(ai, bi)
+// XorDistance ,starting from most significant bit, returns the first encountered 1's bit index position of the xor result of a and b
+func XorDistance(a, b NodeId) int {
+	commonZeroBits := 0
+	for i := range idLength {
+		result := a[i] ^ b[i]
+
+		if result == 0 {
+			commonZeroBits += 8 // all of the byte is filled with 0 bits
+		} else {
+			commonZeroBits += bits.LeadingZeros8(result)
+			return idLength*8 - commonZeroBits - 1
+		}
+	}
+	return idLength*8 - commonZeroBits - 1
 }

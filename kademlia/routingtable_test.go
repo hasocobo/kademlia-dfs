@@ -195,7 +195,7 @@ func TestRoutingTableFindClosest_MoreThanKContacts_PingReturnsTrue_ShouldReturnF
 	}
 
 	// if the first element's distance isn't less than that of the second element, fail
-	if XorDistance(closestContacts[0].ID, targetID).Cmp(XorDistance(closestContacts[1].ID, targetID)) != -1 {
+	if XorDistance(closestContacts[0].ID, targetID) >= (XorDistance(closestContacts[1].ID, targetID)) {
 		t.Fatalf("contacts are not sorted by ascending distance to targetID: dist[0]=%v, dist[1]=%v, contact[0]=%+v, contact[1]=%+v",
 			XorDistance(closestContacts[0].ID, targetID), XorDistance(closestContacts[1].ID, targetID), closestContacts[0], closestContacts[1])
 	}
@@ -243,7 +243,7 @@ func TestRoutingTableFindClosest_LessThanKContacts_ShouldReturnAll(t *testing.T)
 	}
 
 	// if the first element's distance isn't less than that of the second element, fail
-	if XorDistance(closestContacts[0].ID, targetID).Cmp(XorDistance(closestContacts[1].ID, targetID)) != -1 {
+	if XorDistance(closestContacts[0].ID, targetID) >= (XorDistance(closestContacts[1].ID, targetID)) {
 		t.Fatalf("contacts are not sorted by ascending distance to targetID: dist[0]=%v, dist[1]=%v, contact[0]=%+v, contact[1]=%+v",
 			XorDistance(closestContacts[0].ID, targetID), XorDistance(closestContacts[1].ID, targetID), closestContacts[0], closestContacts[1])
 	}

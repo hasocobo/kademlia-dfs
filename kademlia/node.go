@@ -163,7 +163,7 @@ lookupLoop:
 			}
 			// If the newly queried contact doesn't know a closer node to the target id, exit the loop
 			if len(result.Contacts) == 0 ||
-				XorDistance(shortlist.Contacts[0].ID, targetID).Cmp(XorDistance(result.Contacts[0].ID, targetID)) == -1 {
+				XorDistance(shortlist.Contacts[0].ID, targetID) < XorDistance(result.Contacts[0].ID, targetID) {
 				// If there are still concurrent requests at the moment, don't immediately break the loop
 				// and keep going
 				if inFlightCounter > 0 {
@@ -263,7 +263,7 @@ lookupLoop:
 			}
 			// If the newly queried contact doesn't know a closer node to the target id, exit the loop
 			if len(result.Contacts) == 0 ||
-				XorDistance(shortlist.Contacts[0].ID, key).Cmp(XorDistance(result.Contacts[0].ID, key)) == -1 {
+				XorDistance(shortlist.Contacts[0].ID, key) < XorDistance(result.Contacts[0].ID, key) {
 				// If there are still concurrent requests at the moment, don't immediately break the loop
 				// and keep going
 				if inFlightCounter > 0 {
