@@ -70,7 +70,19 @@ func (cs *ContactSorter) Swap(i, j int) {
 }
 
 func (cs *ContactSorter) Less(i, j int) bool {
-	distI := XorDistance(cs.Contacts[i].ID, cs.TargetID)
-	distJ := XorDistance(cs.Contacts[j].ID, cs.TargetID)
-	return distI.Cmp(distJ) == -1
+	a := cs.Contacts[i].ID
+	b := cs.Contacts[j].ID
+	target := cs.TargetID
+
+	for idx := range idLength {
+		distI := a[idx] ^ target[idx]
+		distJ := b[idx] ^ target[idx]
+
+		if distI < distJ {
+			return true
+		} else if distI > distJ {
+			return false
+		}
+	}
+	return false
 }

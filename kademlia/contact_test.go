@@ -2,8 +2,26 @@ package kademliadfs
 
 import (
 	"reflect"
+	"sort"
 	"testing"
 )
+
+func BenchmarkContactSorter(b *testing.B) {
+	targetId := NewNodeId("target-id")
+	contactSorter := NewContactSorter(targetId)
+
+	dummyContacts := make([]Contact, 0)
+	for range idLength * 8 {
+		for range k {
+			dummyContacts = append(dummyContacts, (Contact{ID: NewRandomId()}))
+		}
+	}
+	contactSorter.Contacts = dummyContacts
+
+	for b.Loop() {
+		sort.Sort(contactSorter)
+	}
+}
 
 func TestContactSorter_AddDuplicateEntries_DeduplicatesThem(t *testing.T) {
 	t.Parallel()
@@ -47,5 +65,4 @@ func TestContactSorter_AddMultipleEntries_SortsEntries(t *testing.T) {
 			contactSorter.Get(0), contactSorter.Get(1), contactSorter.Get(2),
 			closestContact, middleContact, furthestContact)
 	}
-
 }
