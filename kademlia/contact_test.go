@@ -16,10 +16,26 @@ func BenchmarkContactSorter(b *testing.B) {
 			dummyContacts = append(dummyContacts, (Contact{ID: NewRandomId()}))
 		}
 	}
-	contactSorter.Contacts = dummyContacts
+	contactSorter.Add(dummyContacts...)
 
 	for b.Loop() {
 		sort.Sort(contactSorter)
+	}
+}
+
+func BenchmarkAdd(b *testing.B) {
+	targetId := NewNodeId("target-id")
+	contactSorter := NewContactSorter(targetId)
+
+	dummyContacts := make([]Contact, 0)
+	for range idLength * 8 {
+		for range k {
+			dummyContacts = append(dummyContacts, (Contact{ID: NewRandomId()}))
+		}
+	}
+
+	for b.Loop() {
+		contactSorter.Add(dummyContacts...)
 	}
 }
 

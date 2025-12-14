@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"log"
 	"net"
-	"sort"
 	"sync"
 	"time"
 )
@@ -92,8 +91,8 @@ func (node *Node) HandleFindValue(requester Contact, key NodeId) ([]byte, []Cont
 func (node *Node) HandleStore(requester Contact, key NodeId, value []byte) {
 	node.RoutingTable.Update(requester)
 
-	node.mu.RLock()
-	defer node.mu.RUnlock()
+	node.mu.Lock()
+	defer node.mu.Unlock()
 
 	node.Storage[key] = value
 }
@@ -129,12 +128,10 @@ func (node *Node) Lookup(targetID NodeId) []Contact {
 		return nil, fmt.Errorf("Contact Not Found")
 	}
 
-	if len(shortlist.Contacts) == 0 {
+	if shortlist.Length == 0 {
 		fmt.Println("Found no contacts in buckets")
 		return nil
 	}
-
-	sort.Sort(shortlist)
 
 	queried := make(map[NodeId]bool, k)
 
@@ -143,7 +140,7 @@ func (node *Node) Lookup(targetID NodeId) []Contact {
 lookupLoop:
 	for moreNodesToQuery {
 		for inFlightCounter < maxConcurrentRequests {
-			nodeToQuery, err := findNextUnqueriedContact(shortlist.Contacts, queried)
+			nodeToQuery, err := findNextUnqueriedContact(shortlist.Contacts[:shortlist.Length], queried)
 			if err != nil {
 				break
 			}
@@ -158,12 +155,8 @@ lookupLoop:
 			break lookupLoop
 		case result := <-resultsChan:
 			inFlightCounter--
-			for _, contact := range result.Contacts {
-				node.RoutingTable.Update(contact)
-			}
 			// If the newly queried contact doesn't know a closer node to the target id, exit the loop
-			if len(result.Contacts) == 0 ||
-				XorDistance(shortlist.Contacts[0].ID, targetID) < XorDistance(result.Contacts[0].ID, targetID) {
+			if len(result.Contacts) == 0 {
 				// If there are still concurrent requests at the moment, don't immediately break the loop
 				// and keep going
 				if inFlightCounter > 0 {
@@ -172,10 +165,13 @@ lookupLoop:
 				moreNodesToQuery = false
 				break lookupLoop
 			}
-
 			shortlist.Add(result.Contacts...)
 
-			nodeToQuery, err := findNextUnqueriedContact(shortlist.Contacts, queried)
+			for _, contact := range result.Contacts {
+				node.RoutingTable.Update(contact)
+			}
+
+			nodeToQuery, err := findNextUnqueriedContact(shortlist.Contacts[:shortlist.Length], queried)
 			if err != nil {
 				log.Print("there are no nodes left to lookup")
 				break lookupLoop
@@ -187,11 +183,7 @@ lookupLoop:
 
 	}
 
-	if len(shortlist.Contacts) < k {
-		return shortlist.Contacts
-	}
-
-	return shortlist.Contacts[:k]
+	return shortlist.Contacts[:shortlist.Length]
 }
 
 func (node *Node) ValueLookup(key NodeId) (contacts []Contact, value []byte, err error) {
@@ -225,11 +217,9 @@ func (node *Node) ValueLookup(key NodeId) (contacts []Contact, value []byte, err
 		return nil, fmt.Errorf("not found any contact")
 	}
 
-	if len(shortlist.Contacts) == 0 {
+	if shortlist.Length == 0 {
 		return nil, nil, fmt.Errorf("found no contacts in buckets")
 	}
-
-	sort.Sort(shortlist)
 
 	queried := make(map[NodeId]bool, k)
 
@@ -238,7 +228,7 @@ func (node *Node) ValueLookup(key NodeId) (contacts []Contact, value []byte, err
 lookupLoop:
 	for moreNodesToQuery {
 		for inFlightCounter < maxConcurrentRequests {
-			nodeToQuery, err := findNextUnqueriedContact(shortlist.Contacts, queried)
+			nodeToQuery, err := findNextUnqueriedContact(shortlist.Contacts[:shortlist.Length], queried)
 			if err != nil {
 				break lookupLoop
 			}
@@ -258,12 +248,8 @@ lookupLoop:
 				return nil, result.Value, nil
 			}
 
-			for _, contact := range result.Contacts {
-				node.RoutingTable.Update(contact)
-			}
 			// If the newly queried contact doesn't know a closer node to the target id, exit the loop
-			if len(result.Contacts) == 0 ||
-				XorDistance(shortlist.Contacts[0].ID, key) < XorDistance(result.Contacts[0].ID, key) {
+			if len(result.Contacts) == 0 {
 				// If there are still concurrent requests at the moment, don't immediately break the loop
 				// and keep going
 				if inFlightCounter > 0 {
@@ -272,10 +258,12 @@ lookupLoop:
 				moreNodesToQuery = false
 				break lookupLoop
 			}
-
+			for _, contact := range result.Contacts {
+				node.RoutingTable.Update(contact)
+			}
 			shortlist.Add(result.Contacts...)
 
-			nodeToQuery, err := findNextUnqueriedContact(shortlist.Contacts, queried)
+			nodeToQuery, err := findNextUnqueriedContact(shortlist.Contacts[:shortlist.Length], queried)
 			if err != nil {
 				break lookupLoop
 			}
@@ -286,11 +274,7 @@ lookupLoop:
 
 	}
 
-	if len(shortlist.Contacts) < k {
-		return shortlist.Contacts, nil, nil
-	}
-
-	return shortlist.Contacts[:k], nil, nil
+	return shortlist.Contacts[:shortlist.Length], nil, nil
 }
 
 func (node *Node) Join(bootstrapNode Contact) error {

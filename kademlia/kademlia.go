@@ -15,18 +15,23 @@ const (
 	maxConcurrentRequests = 3 // Standard concurrency parameter (alpha) for Kademlia node lookup
 )
 
-// XorDistance ,starting from most significant bit, returns the first encountered 1's bit index position of the xor result of a and b
+// XorDistance ,starting from the most significant bit, returns the first encountered 1's bit index position of the xor result of a and b
 func XorDistance(a, b NodeId) int {
-	commonZeroBits := 0
+	commonZeroBitCount := 0
 	for i := range idLength {
 		result := a[i] ^ b[i]
 
 		if result == 0 {
-			commonZeroBits += 8 // all of the byte is filled with 0 bits
+			commonZeroBitCount += 8 // all of the byte is filled with 0 bits
 		} else {
-			commonZeroBits += bits.LeadingZeros8(result)
-			return idLength*8 - commonZeroBits - 1
+			commonZeroBitCount += bits.LeadingZeros8(result)
+			// if they don't match at all, return bucketSize - 1, e.g. 255
+			if commonZeroBitCount == 0 {
+				return idLength*8 - 1
+			}
+			return idLength*8 - commonZeroBitCount - 1
 		}
 	}
-	return idLength*8 - commonZeroBits - 1
+	// if they are exactly the same
+	return idLength*8 - commonZeroBitCount
 }

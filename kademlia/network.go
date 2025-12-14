@@ -44,7 +44,7 @@ type rpcResponse struct {
 func NewUDPNetwork(ip net.IP, port int) (*UDPNetwork, error) {
 	udpConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: ip, Port: port})
 	if err != nil {
-		return nil, fmt.Errorf("Error creating UDP listener: %v", err)
+		return nil, fmt.Errorf("error creating UDP listener: %v", err)
 	}
 
 	log.Printf("Listening on %v\n", udpConn.LocalAddr().String())
@@ -56,7 +56,7 @@ func NewUDPNetwork(ip net.IP, port int) (*UDPNetwork, error) {
 	}
 
 	// create n=workerPoolSize workers
-	for i := 0; i < workerPoolSize; i++ {
+	for range workerPoolSize {
 		go udpNetwork.requestHandlerWorker()
 	}
 

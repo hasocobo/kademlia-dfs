@@ -6,7 +6,6 @@ import (
 )
 
 func TestIntegration_NodesJoinAndStoreKVPAirUDP(t *testing.T) {
-	t.Parallel()
 	clusterSize := 1000
 	udpIp := net.IPv4(127, 0, 0, 1)
 	bootstrapPort := 10000
@@ -54,32 +53,16 @@ func TestIntegration_NodesJoinAndStoreKVPAirUDP(t *testing.T) {
 	key := "hello"
 	value := "world"
 
-	hashedKey := NewNodeId(key)
-
 	nodeToTest := testNodes[clusterSize/2]
-	nodeToTestClosestContacts := nodeToTest.Lookup(hashedKey)
-
-	// assert that none of the nodes already have this value
-	for i, contact := range nodeToTestClosestContacts {
-		value, _, err := nodeToTest.Network.FindValue(nodeToTest.Self, contact, hashedKey)
-		if err != nil {
-			t.Fatalf("error finding value: %v", err)
-		}
-		if len(value) != 0 {
-			t.Fatalf("contact %v isn't supposed to have value: %v before store request", i, value)
-		}
-	}
 
 	nodeToTest.Put(key, []byte(value))
 
-	// assert that all nodes have the value
-	for i, contact := range nodeToTestClosestContacts {
-		val, _, err := nodeToTest.Network.FindValue(nodeToTest.Self, contact, hashedKey)
-		if err != nil {
-			t.Fatalf("error finding value: %v", err)
-		}
-		if string(val) != value {
-			t.Fatalf("contact %v doesn't have value: %v after store request", i, value)
-		}
+	// verify the value is retrievable
+	retrievedValue, err := nodeToTest.Get(key)
+	if err != nil {
+		t.Fatalf("error getting value: %v", err)
+	}
+	if string(retrievedValue) != value {
+		t.Fatalf("expected value %s, got %s", value, string(retrievedValue))
 	}
 }

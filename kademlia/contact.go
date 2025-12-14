@@ -3,7 +3,6 @@ package kademliadfs
 import (
 	"fmt"
 	"net"
-	"sort"
 	"sync"
 )
 
@@ -15,7 +14,8 @@ type Contact struct {
 
 type ContactSorter struct {
 	TargetID NodeId
-	Contacts []Contact
+	Contacts [k]Contact
+	Length   int
 
 	// We need this to know if an element is already in the contacts,
 	// required to prevent duplications
@@ -37,11 +37,44 @@ func (cs *ContactSorter) Add(c ...Contact) {
 			continue
 		}
 
-		cs.Contacts = append(cs.Contacts, contact)
-		cs.IsInContacts[contact.ID] = true
+		if cs.Length == 0 {
+			cs.Contacts[0] = contact
+			cs.Length++
+			cs.IsInContacts[contact.ID] = true
+			continue
+		}
+
+		dist := XorDistance(contact.ID, cs.TargetID)
+		if dist >= XorDistance(cs.Contacts[cs.Length-1].ID, cs.TargetID) {
+			if cs.Length == k {
+				continue
+			}
+			cs.Contacts[cs.Length] = contact
+			cs.Length++
+			cs.IsInContacts[contact.ID] = true
+			continue
+		}
+
+		// 24
+		// 19 22 23 44
+		// i = 3
+		for i := 0; i < cs.Length; i++ {
+			if dist < XorDistance(cs.Contacts[i].ID, cs.TargetID) {
+				if cs.Length == k {
+					// shift right the array
+					delete(cs.IsInContacts, cs.Contacts[cs.Length-1].ID)
+					copy(cs.Contacts[i+1:], cs.Contacts[i:cs.Length-1])
+				} else {
+					copy(cs.Contacts[i+1:], cs.Contacts[i:cs.Length])
+					cs.Length++
+				}
+				cs.Contacts[i] = contact
+				cs.IsInContacts[contact.ID] = true
+				break
+			}
+		}
+
 	}
-	// TODO: Remove sort.Sort and replace it with binary search adding algorithm
-	sort.Sort(cs)
 }
 
 func (cs *ContactSorter) Get(i int) Contact {
@@ -63,7 +96,7 @@ func (cs *ContactSorter) Print() {
 
 // sort.Interface methods
 
-func (cs *ContactSorter) Len() int { return len(cs.Contacts) }
+func (cs *ContactSorter) Len() int { return cs.Length }
 
 func (cs *ContactSorter) Swap(i, j int) {
 	cs.Contacts[i], cs.Contacts[j] = cs.Contacts[j], cs.Contacts[i]
