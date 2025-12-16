@@ -17,15 +17,11 @@ type ContactSorter struct {
 	Contacts [k]Contact
 	Length   int
 
-	// We need this to know if an element is already in the contacts,
-	// required to prevent duplications
-	IsInContacts map[NodeId]bool
-
 	mu sync.Mutex
 }
 
 func NewContactSorter(targetID NodeId) *ContactSorter {
-	return &ContactSorter{TargetID: targetID, IsInContacts: make(map[NodeId]bool)}
+	return &ContactSorter{TargetID: targetID}
 }
 
 func (cs *ContactSorter) Add(c ...Contact) {
@@ -33,14 +29,15 @@ func (cs *ContactSorter) Add(c ...Contact) {
 	defer cs.mu.Unlock()
 
 	for _, contact := range c {
-		if _, exists := cs.IsInContacts[contact.ID]; exists {
-			continue
+		for i := range cs.Length {
+			if contact.ID == cs.Contacts[i].ID {
+				continue
+			}
 		}
 
 		if cs.Length == 0 {
 			cs.Contacts[0] = contact
 			cs.Length++
-			cs.IsInContacts[contact.ID] = true
 			continue
 		}
 
@@ -51,7 +48,6 @@ func (cs *ContactSorter) Add(c ...Contact) {
 			}
 			cs.Contacts[cs.Length] = contact
 			cs.Length++
-			cs.IsInContacts[contact.ID] = true
 			continue
 		}
 
@@ -62,14 +58,12 @@ func (cs *ContactSorter) Add(c ...Contact) {
 			if dist < XorDistance(cs.Contacts[i].ID, cs.TargetID) {
 				if cs.Length == k {
 					// shift right the array
-					delete(cs.IsInContacts, cs.Contacts[cs.Length-1].ID)
 					copy(cs.Contacts[i+1:], cs.Contacts[i:cs.Length-1])
 				} else {
 					copy(cs.Contacts[i+1:], cs.Contacts[i:cs.Length])
 					cs.Length++
 				}
 				cs.Contacts[i] = contact
-				cs.IsInContacts[contact.ID] = true
 				break
 			}
 		}
