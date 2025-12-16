@@ -258,10 +258,11 @@ lookupLoop:
 				moreNodesToQuery = false
 				break lookupLoop
 			}
+			shortlist.Add(result.Contacts...)
+
 			for _, contact := range result.Contacts {
 				node.RoutingTable.Update(contact)
 			}
-			shortlist.Add(result.Contacts...)
 
 			nodeToQuery, err := findNextUnqueriedContact(shortlist.Contacts[:shortlist.Length], queried)
 			if err != nil {

@@ -6,6 +6,7 @@ import (
 )
 
 func TestIntegration_NodesJoinAndStoreKVPAirUDP(t *testing.T) {
+	t.Parallel()
 	clusterSize := 1000
 	udpIp := net.IPv4(127, 0, 0, 1)
 	bootstrapPort := 10000

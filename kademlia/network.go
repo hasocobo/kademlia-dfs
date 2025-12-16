@@ -86,8 +86,11 @@ func (network *UDPNetwork) FindNode(requester Contact, recipient Contact, target
 		network.mu.Unlock()
 	}()
 	log.Printf("[SEND] FindNodeRequest to=%s port=%v key=%s", truncateID(recipient.ID), recipient.Port, truncateID(targetID))
-	msgToSend := network.Encode(rpcMessage)
-	_, err := network.conn.WriteToUDP(msgToSend, &net.UDPAddr{IP: recipient.IP, Port: recipient.Port})
+	msgToSend, err := network.Encode(rpcMessage)
+	if err != nil {
+		return nil, fmt.Errorf("error encoding message: %v", err)
+	}
+	_, err = network.conn.WriteToUDP(msgToSend, &net.UDPAddr{IP: recipient.IP, Port: recipient.Port})
 	if err != nil {
 		return nil, fmt.Errorf("error writing to udp: %v", err)
 	}
@@ -131,8 +134,11 @@ func (network *UDPNetwork) FindValue(requester Contact, recipient Contact, key N
 	}()
 
 	log.Printf("[SEND] FindValueRequest to=%s port=%v key=%s", truncateID(recipient.ID), recipient.Port, truncateID(key))
-	msgToSend := network.Encode(rpcMessage)
-	_, err := network.conn.WriteToUDP(msgToSend, &net.UDPAddr{IP: recipient.IP, Port: recipient.Port})
+	msgToSend, err := network.Encode(rpcMessage)
+	if err != nil {
+		return nil, nil, fmt.Errorf("error encoding message: %v", err)
+	}
+	_, err = network.conn.WriteToUDP(msgToSend, &net.UDPAddr{IP: recipient.IP, Port: recipient.Port})
 	if err != nil {
 		return nil, nil, fmt.Errorf("error writing to udp: %v", err)
 	}
@@ -181,8 +187,11 @@ func (network *UDPNetwork) Ping(requester Contact, recipient Contact) error {
 	}()
 
 	log.Printf("[SEND] Ping to=%s port=%v", truncateID(recipient.ID), recipient.Port)
-	msgToSend := network.Encode(rpcMessage)
-	_, err := network.conn.WriteToUDP(msgToSend, &net.UDPAddr{IP: recipient.IP, Port: recipient.Port})
+	msgToSend, err := network.Encode(rpcMessage)
+	if err != nil {
+		return fmt.Errorf("error encoding message: %v", err)
+	}
+	_, err = network.conn.WriteToUDP(msgToSend, &net.UDPAddr{IP: recipient.IP, Port: recipient.Port})
 	if err != nil {
 		return fmt.Errorf("error writing to udp: %v", err)
 	}
@@ -221,8 +230,11 @@ func (network *UDPNetwork) Store(requester Contact, recipient Contact, key NodeI
 
 	log.Printf("[SEND] StoreRequest to=%s port=%d key=%s valueLen=%d", truncateID(recipient.ID), recipient.Port, truncateID(key), len(value))
 
-	msgToSend := network.Encode(rpcMessage)
-	_, err := network.conn.WriteToUDP(msgToSend, &net.UDPAddr{IP: recipient.IP, Port: recipient.Port})
+	msgToSend, err := network.Encode(rpcMessage)
+	if err != nil {
+		return fmt.Errorf("error encoding message: %v", err)
+	}
+	_, err = network.conn.WriteToUDP(msgToSend, &net.UDPAddr{IP: recipient.IP, Port: recipient.Port})
 	if err != nil {
 		return fmt.Errorf("error writing to udp: %v", err)
 	}
@@ -230,7 +242,7 @@ func (network *UDPNetwork) Store(requester Contact, recipient Contact, key NodeI
 	select {
 	case <-time.After(time.Second * 5):
 		log.Printf("[TIMEOUT] StoreRequest to=%s port=%d key=%s", truncateID(recipient.ID), recipient.Port, truncateID(key))
-		return fmt.Errorf("request timed out: %v", err)
+		return fmt.Errorf("request timed out")
 	case <-resultsChan:
 		return nil
 	}
@@ -325,48 +337,47 @@ func (network *UDPNetwork) Decode(packet []byte) (*RpcMessage, error) {
 		nil
 }
 
-// TODO: remove replace log.Fatalf with printf and return []byte, error
 // Encode takes RpcMessage struct and converts it to raw UDP bytes
-func (network *UDPNetwork) Encode(message *RpcMessage) []byte {
+func (network *UDPNetwork) Encode(message *RpcMessage) ([]byte, error) {
 	encodedMessage := make([]byte, 0)
 	var err error
 
 	encodedMessage, err = binary.Append(encodedMessage, binary.BigEndian, message.MessageID)
 	if err != nil {
-		log.Fatalf("failed encoding messageId: %v", err)
+		return nil, fmt.Errorf("failed encoding messageId: %v", err)
 	}
 
 	encodedMessage, err = binary.Append(encodedMessage, binary.BigEndian, message.OpCode)
 	if err != nil {
-		log.Fatalf("failed encoding opCode: %v", err)
+		return nil, fmt.Errorf("failed encoding opCode: %v", err)
 	}
 
 	encodedMessage, err = binary.Append(encodedMessage, binary.BigEndian, message.SelfNodeId)
 	if err != nil {
-		log.Fatalf("failed encoding NodeId: %v", err)
+		return nil, fmt.Errorf("failed encoding NodeId: %v", err)
 	}
 
 	encodedMessage, err = binary.Append(encodedMessage, binary.BigEndian, message.Key)
 	if err != nil {
-		log.Fatalf("failed encoding Key: %v", err)
+		return nil, fmt.Errorf("failed encoding Key: %v", err)
 	}
 
 	encodedMessage, err = binary.Append(encodedMessage, binary.BigEndian, message.ValueLength)
 	if err != nil {
-		log.Fatalf("failed encoding value length: %v", err)
+		return nil, fmt.Errorf("failed encoding value length: %v", err)
 	}
 
 	encodedMessage = append(encodedMessage, message.Value...)
 
 	encodedMessage, err = binary.Append(encodedMessage, binary.BigEndian, message.ContactsLength)
 	if err != nil {
-		log.Fatalf("failed encoding contacts length: %v", err)
+		return nil, fmt.Errorf("failed encoding contacts length: %v", err)
 	}
 
 	for _, contact := range message.Contacts {
 		encodedMessage, err = binary.Append(encodedMessage, binary.BigEndian, contact.ID)
 		if err != nil {
-			log.Fatalf("failed encoding contact Id: %v", err)
+			return nil, fmt.Errorf("failed encoding contact Id: %v", err)
 		}
 
 		encodedMessage = append(encodedMessage, contact.IP.To4()...)
@@ -374,7 +385,7 @@ func (network *UDPNetwork) Encode(message *RpcMessage) []byte {
 		encodedMessage = binary.BigEndian.AppendUint16(encodedMessage, uint16(contact.Port))
 	}
 
-	return encodedMessage
+	return encodedMessage, nil
 }
 
 func (network *UDPNetwork) requestHandlerWorker() {
@@ -402,7 +413,12 @@ func (network *UDPNetwork) handleIncomingRequest(message *RpcMessage, addr *net.
 			ContactsLength: 0,
 			Contacts:       nil,
 		}
-		_, err := network.conn.WriteToUDP(network.Encode(pingResponse), addr)
+		encodedMessage, err := network.Encode(pingResponse)
+		if err != nil {
+			log.Printf("error encoding Pong response: %v\n", err)
+			return
+		}
+		_, err = network.conn.WriteToUDP(encodedMessage, addr)
 		if err != nil {
 			log.Printf("error sending a response to addr: %v, : %v\n", addr, err)
 			return
@@ -423,7 +439,12 @@ func (network *UDPNetwork) handleIncomingRequest(message *RpcMessage, addr *net.
 			ContactsLength: uint64(len(contacts)),
 			Contacts:       contacts,
 		}
-		_, err := network.conn.WriteToUDP(network.Encode(findNodeResponse), addr)
+		encodedMessage, err := network.Encode(findNodeResponse)
+		if err != nil {
+			log.Printf("error encoding FindNodeResponse: %v\n", err)
+			return
+		}
+		_, err = network.conn.WriteToUDP(encodedMessage, addr)
 		if err != nil {
 			log.Printf("error sending a response to addr: %v, : %v\n", addr, err)
 			return
@@ -443,7 +464,12 @@ func (network *UDPNetwork) handleIncomingRequest(message *RpcMessage, addr *net.
 			ContactsLength: uint64(len(contacts)),
 			Contacts:       contacts,
 		}
-		_, err := network.conn.WriteToUDP(network.Encode(findValueResponse), addr)
+		encodedMessage, err := network.Encode(findValueResponse)
+		if err != nil {
+			log.Printf("error encoding FindValueResponse: %v\n", err)
+			return
+		}
+		_, err = network.conn.WriteToUDP(encodedMessage, addr)
 		if err != nil {
 			log.Printf("error sending a response to addr: %v, : %v\n", addr, err)
 			return
@@ -463,7 +489,12 @@ func (network *UDPNetwork) handleIncomingRequest(message *RpcMessage, addr *net.
 			ContactsLength: 0,
 			Contacts:       nil,
 		}
-		_, err := network.conn.WriteToUDP(network.Encode(storeResponse), addr)
+		encodedMessage, err := network.Encode(storeResponse)
+		if err != nil {
+			log.Printf("error encoding StoreResponse: %v\n", err)
+			return
+		}
+		_, err = network.conn.WriteToUDP(encodedMessage, addr)
 		if err != nil {
 			log.Printf("error sending a response to addr: %v, : %v\n", addr, err)
 			return
@@ -526,7 +557,7 @@ func (network *UDPNetwork) Listen() error {
 		buf := make([]byte, MaxUDPPacketSize)
 		n, addr, err := network.conn.ReadFromUDP(buf)
 		if err != nil {
-			log.Fatalf("error reading from UDP: %v", err)
+			return fmt.Errorf("error reading from UDP: %v", err)
 		}
 		data := buf[:n]
 		decodedMessage, err := network.Decode(data)
