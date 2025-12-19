@@ -2,6 +2,7 @@ package kademliadfs
 
 import (
 	"container/list"
+	"context"
 	"net"
 	"reflect"
 	"testing"
@@ -10,7 +11,7 @@ import (
 func BenchmarkFindClosest(b *testing.B) {
 	selfID := NewNodeId("test-id")
 	targetId := NewNodeId("target-id")
-	rt := NewRoutingTable(selfID, func(c Contact) bool { return false }) // dummy ping returns false
+	rt := NewRoutingTable(selfID, func(ctx context.Context, c Contact) bool { return false }) // dummy ping returns false
 	for i := range idLength * 8 {
 		dummyContacts := list.New()
 		for range k {
@@ -31,9 +32,9 @@ func TestRoutingTableUpdate_NewContact_BucketNotFull(t *testing.T) {
 	testBucketIndex := 10
 	contact := CreateContactForBucket(selfID, testBucketIndex, 0)
 
-	rt := NewRoutingTable(selfID, func(c Contact) bool { return false }) // dummy ping returns false
+	rt := NewRoutingTable(selfID, func(ctx context.Context, c Contact) bool { return false }) // dummy ping returns false
 
-	rt.Update(contact)
+	rt.Update(context.TODO(), contact)
 
 	if rt.Buckets[testBucketIndex].Contacts.Len() == 0 {
 		t.Fatalf("bucket %d is empty after Update", testBucketIndex)
@@ -50,7 +51,7 @@ func TestRoutingTableUpdate_ExistingContact_ShouldMoveToFront(t *testing.T) {
 	selfID := NewNodeId("test-id")
 	testBucketIndex := 10
 
-	rt := NewRoutingTable(selfID, func(c Contact) bool { return false }) // dummy ping returns false
+	rt := NewRoutingTable(selfID, func(ctx context.Context, c Contact) bool { return false }) // dummy ping returns false
 
 	existingContact := CreateContactForBucket(selfID, testBucketIndex, 0)
 	newContact := CreateContactForBucket(selfID, testBucketIndex, 1)
@@ -66,7 +67,7 @@ func TestRoutingTableUpdate_ExistingContact_ShouldMoveToFront(t *testing.T) {
 		t.Fatalf("front value is already the existing contact")
 	}
 
-	rt.Update(existingContact)
+	rt.Update(context.TODO(), existingContact)
 
 	if !reflect.DeepEqual(rt.Buckets[testBucketIndex].Contacts.Front().Value, existingContact) {
 		t.Fatalf("unexpected contact in bucket %d: got %+v, want %+v",
@@ -80,7 +81,7 @@ func TestRoutingTableUpdate_NewContact_BucketFull_PingFails_ShouldReplaceExistin
 	selfID := NewNodeId("test-id")
 	testBucketIndex := 10
 
-	rt := NewRoutingTable(selfID, func(c Contact) bool { return false }) // dummy ping returns false
+	rt := NewRoutingTable(selfID, func(ctx context.Context, c Contact) bool { return false }) // dummy ping returns false
 
 	existingContact := CreateContactForBucket(selfID, testBucketIndex, 0)
 	contactToBeEjected := CreateContactForBucket(selfID, testBucketIndex, 1)
@@ -92,7 +93,7 @@ func TestRoutingTableUpdate_NewContact_BucketFull_PingFails_ShouldReplaceExistin
 		rt.Buckets[testBucketIndex].Contacts.PushFront(existingContact)
 	}
 
-	rt.Update(newContact)
+	rt.Update(context.TODO(), newContact)
 
 	if rt.Buckets[testBucketIndex].Contacts.Len() != k {
 		t.Fatalf("unexpected bucket size, want: %d, got: %d", k, rt.Buckets[testBucketIndex].Contacts.Len())
@@ -115,7 +116,7 @@ func TestRoutingTableUpdate_NewContact_BucketFull_PingSucceeds_ShouldKeepExistin
 	selfID := NewNodeId("test-id")
 	testBucketIndex := 10
 
-	rt := NewRoutingTable(selfID, func(c Contact) bool { return true }) // dummy ping returns true
+	rt := NewRoutingTable(selfID, func(ctx context.Context, c Contact) bool { return true }) // dummy ping returns true
 
 	existingContact := CreateContactForBucket(selfID, testBucketIndex, 0)
 	contactToBeKept := CreateContactForBucket(selfID, testBucketIndex, 1)
@@ -129,7 +130,7 @@ func TestRoutingTableUpdate_NewContact_BucketFull_PingSucceeds_ShouldKeepExistin
 		rt.Buckets[testBucketIndex].Contacts.PushFront(existingContact)
 	}
 
-	rt.Update(newContact)
+	rt.Update(context.TODO(), newContact)
 
 	if rt.Buckets[testBucketIndex].Contacts.Len() != k {
 		t.Fatalf("unexpected bucket size, want: %d, got: %d", k, rt.Buckets[testBucketIndex].Contacts.Len())
@@ -158,8 +159,8 @@ func TestRoutingTableFindClosest_MoreThanKContacts_PingReturnsTrue_ShouldReturnF
 	numberOfContacts := max(k*2, 2) // Needs at least 2 contacts
 
 	selfID := NewNodeId("test-id")
-	targetID := NodeId{}                                                // all zeros for easy testability
-	rt := NewRoutingTable(selfID, func(c Contact) bool { return true }) // dummy ping returns true
+	targetID := NodeId{}                                                                     // all zeros for easy testability
+	rt := NewRoutingTable(selfID, func(ctx context.Context, c Contact) bool { return true }) // dummy ping returns true
 
 	// Create a Node ID with 1 at the index while leaving the rest 0
 	// Need to use this to create one node for each bucket
@@ -181,7 +182,7 @@ func TestRoutingTableFindClosest_MoreThanKContacts_PingReturnsTrue_ShouldReturnF
 	}
 
 	for i := range numberOfContacts {
-		rt.Update(Contact{ID: createNodeIDWithBitSet(i), Port: 10000 + i, IP: net.IPv4(127, 0, 0, 1)})
+		rt.Update(context.TODO(), Contact{ID: createNodeIDWithBitSet(i), Port: 10000 + i, IP: net.IPv4(127, 0, 0, 1)})
 	}
 
 	closestContacts := rt.FindClosest(targetID, k)
@@ -211,8 +212,8 @@ func TestRoutingTableFindClosest_LessThanKContacts_ShouldReturnAll(t *testing.T)
 	numberOfContacts := max(k/2, 2) // Needs at least 2 contacts
 
 	selfID := NewNodeId("test-id")
-	targetID := NodeId{}                                                 // all zeros for easy testability
-	rt := NewRoutingTable(selfID, func(c Contact) bool { return false }) // dummy ping returns false
+	targetID := NodeId{}                                                                      // all zeros for easy testability
+	rt := NewRoutingTable(selfID, func(ctx context.Context, c Contact) bool { return false }) // dummy ping returns false
 
 	// Create a Node ID with 1 at the index while leaving the rest 0
 	// Need to use this to create one node for each bucket
@@ -233,7 +234,7 @@ func TestRoutingTableFindClosest_LessThanKContacts_ShouldReturnAll(t *testing.T)
 	}
 
 	for i := range numberOfContacts {
-		rt.Update(Contact{ID: createNodeIDWithBitSet(i), Port: 10000 + i, IP: net.IPv4(127, 0, 0, 1)})
+		rt.Update(context.TODO(), Contact{ID: createNodeIDWithBitSet(i), Port: 10000 + i, IP: net.IPv4(127, 0, 0, 1)})
 	}
 
 	closestContacts := rt.FindClosest(targetID, numberOfContacts)

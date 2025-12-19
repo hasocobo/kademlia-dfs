@@ -1,6 +1,7 @@
 package kademliadfs
 
 import (
+	"context"
 	"encoding/binary"
 	"fmt"
 	"log"
@@ -13,13 +14,14 @@ const (
 	MaxUDPPacketSize  = 65535
 	packetBufferLimit = 1024 // how many packets can wait in buffer
 	workerPoolSize    = 32
+	timeoutDuration   = 500 // in ms
 )
 
 type Network interface {
-	Ping(requester, recipient Contact) error
-	FindNode(requester, recipient Contact, targetID NodeId) ([]Contact, error)
-	FindValue(requester, recipient Contact, key NodeId) ([]byte, []Contact, error)
-	Store(requester, recipient Contact, key NodeId, value []byte) error
+	Ping(ctx context.Context, requester, recipient Contact) error
+	FindNode(ctx context.Context, requester, recipient Contact, targetID NodeId) ([]Contact, error)
+	FindValue(ctx context.Context, requester, recipient Contact, key NodeId) ([]byte, []Contact, error)
+	Store(ctx context.Context, equester, recipient Contact, key NodeId, value []byte) error
 }
 
 type UDPNetwork struct {
@@ -55,16 +57,19 @@ func NewUDPNetwork(ip net.IP, port int) (*UDPNetwork, error) {
 		requestQueue: make(chan UDPRequest, packetBufferLimit),
 	}
 
-	// create n=workerPoolSize workers
+	// create n=workerPoolSize workers with timeout
 	for range workerPoolSize {
-		go udpNetwork.requestHandlerWorker()
+		go udpNetwork.requestHandlerWorker(context.Background())
 	}
 
 	return udpNetwork, nil
 }
 
 // FindNode implements Network.
-func (network *UDPNetwork) FindNode(requester Contact, recipient Contact, targetID NodeId) ([]Contact, error) {
+func (network *UDPNetwork) FindNode(ctx context.Context, requester Contact, recipient Contact, targetID NodeId) ([]Contact, error) {
+	ctx, cancel := context.WithTimeout(ctx, timeoutDuration*time.Millisecond)
+	defer cancel()
+
 	resultsChan := make(chan rpcResponse, 1)
 	rpcMessage := &RpcMessage{
 		MessageID:      NewRandomId(),
@@ -94,7 +99,7 @@ func (network *UDPNetwork) FindNode(requester Contact, recipient Contact, target
 	if err != nil {
 		return nil, fmt.Errorf("error writing to udp: %v", err)
 	}
-	// Times out if after 5000 ms
+
 	select {
 	case result := <-resultsChan:
 		var filteredContacts []Contact
@@ -104,14 +109,16 @@ func (network *UDPNetwork) FindNode(requester Contact, recipient Contact, target
 			}
 		}
 		return filteredContacts, nil
-	case <-time.After(time.Millisecond * 5000):
+	case <-ctx.Done():
 		log.Printf("[TIMEOUT] FindNodeRequest to=%s port=%d key=%s", truncateID(recipient.ID), recipient.Port, truncateID(targetID))
 		return nil, fmt.Errorf("timeout waiting for FindNode response")
 	}
 }
 
 // FindValue implements Network.
-func (network *UDPNetwork) FindValue(requester Contact, recipient Contact, key NodeId) ([]byte, []Contact, error) {
+func (network *UDPNetwork) FindValue(ctx context.Context, requester Contact, recipient Contact, key NodeId) ([]byte, []Contact, error) {
+	ctx, cancel := context.WithTimeout(ctx, timeoutDuration*time.Millisecond)
+	defer cancel()
 	resultsChan := make(chan rpcResponse, 1)
 	rpcMessage := &RpcMessage{
 		MessageID:      NewRandomId(),
@@ -142,10 +149,9 @@ func (network *UDPNetwork) FindValue(requester Contact, recipient Contact, key N
 	if err != nil {
 		return nil, nil, fmt.Errorf("error writing to udp: %v", err)
 	}
-	// Times out if after 5000 ms
 	select {
 	case result := <-resultsChan:
-		if result.Value != nil {
+		if len(result.Value) != 0 {
 			return result.Value, nil, nil
 		}
 
@@ -156,14 +162,16 @@ func (network *UDPNetwork) FindValue(requester Contact, recipient Contact, key N
 			}
 		}
 		return nil, filteredContacts, nil
-	case <-time.After(time.Millisecond * 5000):
+	case <-ctx.Done():
 		log.Printf("[TIMEOUT] FindValueRequest to=%s port=%d key=%s", truncateID(recipient.ID), recipient.Port, truncateID(key))
 		return nil, nil, fmt.Errorf("timeout waiting for FindValue response")
 	}
 }
 
 // Ping implements Network.
-func (network *UDPNetwork) Ping(requester Contact, recipient Contact) error {
+func (network *UDPNetwork) Ping(ctx context.Context, requester Contact, recipient Contact) error {
+	ctx, cancel := context.WithTimeout(ctx, timeoutDuration*time.Millisecond)
+	defer cancel()
 	resultsChan := make(chan rpcResponse, 1)
 	rpcMessage := &RpcMessage{
 		MessageID:      NewRandomId(),
@@ -199,14 +207,14 @@ func (network *UDPNetwork) Ping(requester Contact, recipient Contact) error {
 	select {
 	case <-resultsChan:
 		return nil
-	case <-time.After(time.Millisecond * 5000):
+	case <-ctx.Done():
 		log.Printf("[TIMEOUT] Ping to=%s port=%d", truncateID(recipient.ID), recipient.Port)
 		return fmt.Errorf("timeout waiting for Pong")
 	}
 }
 
 // Store implements Network.
-func (network *UDPNetwork) Store(requester Contact, recipient Contact, key NodeId, value []byte) error {
+func (network *UDPNetwork) Store(ctx context.Context, requester Contact, recipient Contact, key NodeId, value []byte) error {
 	resultsChan := make(chan rpcResponse, 1)
 	rpcMessage := &RpcMessage{
 		MessageID:      NewRandomId(),
@@ -240,7 +248,7 @@ func (network *UDPNetwork) Store(requester Contact, recipient Contact, key NodeI
 	}
 
 	select {
-	case <-time.After(time.Second * 5):
+	case <-ctx.Done():
 		log.Printf("[TIMEOUT] StoreRequest to=%s port=%d key=%s", truncateID(recipient.ID), recipient.Port, truncateID(key))
 		return fmt.Errorf("request timed out")
 	case <-resultsChan:
@@ -249,10 +257,10 @@ func (network *UDPNetwork) Store(requester Contact, recipient Contact, key NodeI
 }
 
 type RpcHandler interface {
-	HandlePing(requester Contact) bool
-	HandleFindNode(requester Contact, key NodeId) []Contact
-	HandleFindValue(requester Contact, key NodeId) ([]byte, []Contact)
-	HandleStore(requester Contact, key NodeId, value []byte)
+	HandlePing(ctx context.Context, requester Contact) bool
+	HandleFindNode(ctx context.Context, requester Contact, key NodeId) []Contact
+	HandleFindValue(ctx context.Context, requester Contact, key NodeId) ([]byte, []Contact)
+	HandleStore(ctx context.Context, requester Contact, key NodeId, value []byte)
 }
 
 // Fixed length Rpc Message structure for now, might migrate to protobuf/avro in the future
@@ -388,21 +396,21 @@ func (network *UDPNetwork) Encode(message *RpcMessage) ([]byte, error) {
 	return encodedMessage, nil
 }
 
-func (network *UDPNetwork) requestHandlerWorker() {
+func (network *UDPNetwork) requestHandlerWorker(ctx context.Context) error {
 	for {
-		select {
-		case request := <-network.requestQueue:
-			network.handleIncomingRequest(request.message, request.address)
-		}
-		// TODO: add context.timeout
+		request := <-network.requestQueue
+		network.handleIncomingRequest(ctx, request.message, request.address)
 	}
 }
 
-func (network *UDPNetwork) handleIncomingRequest(message *RpcMessage, addr *net.UDPAddr) {
+func (network *UDPNetwork) handleIncomingRequest(ctx context.Context, message *RpcMessage, addr *net.UDPAddr) {
+	if ctx.Err() != nil {
+		return
+	}
 	switch message.OpCode {
 	case Ping:
 		log.Printf("[RECV] Ping from=%s port=%d", truncateID(message.SelfNodeId), addr.Port)
-		network.rpcHandler.HandlePing(Contact{ID: message.SelfNodeId, IP: addr.IP, Port: addr.Port})
+		network.rpcHandler.HandlePing(ctx, Contact{ID: message.SelfNodeId, IP: addr.IP, Port: addr.Port})
 		pingResponse := &RpcMessage{
 			MessageID:      message.MessageID,
 			OpCode:         Pong,
@@ -427,7 +435,7 @@ func (network *UDPNetwork) handleIncomingRequest(message *RpcMessage, addr *net.
 
 	case FindNodeRequest:
 		log.Printf("[RECV] FindNodeRequest from=%s port=%d key=%s", truncateID(message.SelfNodeId), addr.Port, truncateID(message.Key))
-		contacts := network.rpcHandler.HandleFindNode(Contact{ID: message.SelfNodeId, IP: addr.IP, Port: addr.Port}, message.Key)
+		contacts := network.rpcHandler.HandleFindNode(ctx, Contact{ID: message.SelfNodeId, IP: addr.IP, Port: addr.Port}, message.Key)
 		// TODO: remove unnecessary fields like key, they don't need to be included in the response
 		findNodeResponse := &RpcMessage{
 			MessageID:      message.MessageID,
@@ -453,7 +461,7 @@ func (network *UDPNetwork) handleIncomingRequest(message *RpcMessage, addr *net.
 
 	case FindValueRequest:
 		log.Printf("[RECV] FindValueRequest from=%s port=%d key=%s valueLen=%d", truncateID(message.SelfNodeId), addr.Port, truncateID(message.Key), message.ValueLength)
-		value, contacts := network.rpcHandler.HandleFindValue(Contact{ID: message.SelfNodeId, IP: addr.IP, Port: addr.Port}, message.Key)
+		value, contacts := network.rpcHandler.HandleFindValue(ctx, Contact{ID: message.SelfNodeId, IP: addr.IP, Port: addr.Port}, message.Key)
 		findValueResponse := &RpcMessage{
 			MessageID:      message.MessageID,
 			OpCode:         FindValueResponse,
@@ -478,7 +486,7 @@ func (network *UDPNetwork) handleIncomingRequest(message *RpcMessage, addr *net.
 
 	case StoreRequest:
 		log.Printf("[RECV] StoreRequest from=%s port=%d key=%s valueLen=%d", truncateID(message.SelfNodeId), addr.Port, truncateID(message.Key), message.ValueLength)
-		network.rpcHandler.HandleStore(Contact{ID: message.SelfNodeId, IP: addr.IP, Port: addr.Port}, message.Key, message.Value)
+		network.rpcHandler.HandleStore(ctx, Contact{ID: message.SelfNodeId, IP: addr.IP, Port: addr.Port}, message.Key, message.Value)
 		storeResponse := &RpcMessage{
 			MessageID:      message.MessageID,
 			OpCode:         StoreResponse,
@@ -548,6 +556,8 @@ func (network *UDPNetwork) handleIncomingRequest(message *RpcMessage, addr *net.
 		}
 		responseChannel <- rpcResponse{Contacts: message.Contacts, Value: message.Value}
 
+	default:
+		break
 	}
 }
 
@@ -566,7 +576,12 @@ func (network *UDPNetwork) Listen() error {
 			continue
 		}
 
-		network.requestQueue <- UDPRequest{message: decodedMessage, address: addr}
+		select {
+		case network.requestQueue <- UDPRequest{message: decodedMessage, address: addr}:
+
+		default:
+			log.Printf("request queue is full, dropping package from %v", addr)
+		}
 	}
 }
 
@@ -592,72 +607,4 @@ func formatContacts(contacts []Contact) string {
 		result += truncateID(c.ID)
 	}
 	return result + "]"
-}
-
-// Simulation network implements Network to test the core RPC calls without the complexity of UDP yet
-type SimNetwork struct {
-	Nodes map[NodeId]*Node
-	mu    sync.Mutex
-}
-
-func NewSimNetwork() *SimNetwork {
-	return &SimNetwork{
-		Nodes: make(map[NodeId]*Node),
-	}
-}
-
-func (sn *SimNetwork) Ping(requester, recipient Contact) error {
-	sn.mu.Lock()
-	defer sn.mu.Unlock()
-
-	if node, exists := sn.Nodes[recipient.ID]; exists {
-		node.HandlePing(requester)
-	}
-
-	return nil
-}
-
-func (sn *SimNetwork) FindNode(requester, recipient Contact, targetID NodeId) ([]Contact, error) {
-	sn.mu.Lock()
-	defer sn.mu.Unlock()
-
-	recipientNode, exists := sn.Nodes[recipient.ID]
-	if !exists {
-		return nil, fmt.Errorf("recipient node %v not found", recipient.ID)
-	}
-
-	return recipientNode.HandleFindNode(requester, targetID), nil
-}
-
-func (sn *SimNetwork) FindValue(requester, recipient Contact, key NodeId) ([]byte, []Contact, error) {
-	sn.mu.Lock()
-	defer sn.mu.Unlock()
-
-	recipientNode, exists := sn.Nodes[recipient.ID]
-	if !exists {
-		return nil, nil, fmt.Errorf("recipient node %v not found", recipient.ID)
-	}
-
-	value, contacts := recipientNode.HandleFindValue(requester, key)
-	return value, contacts, nil
-}
-
-func (sn *SimNetwork) Store(requester, recipient Contact, key NodeId, value []byte) error {
-	sn.mu.Lock()
-	defer sn.mu.Unlock()
-
-	recipientNode, exists := sn.Nodes[recipient.ID]
-	if !exists {
-		return fmt.Errorf("recipient node %v not found", recipient.ID)
-	}
-
-	recipientNode.HandleStore(requester, key, value)
-	return nil
-}
-
-func (sn *SimNetwork) Register(n *Node) {
-	sn.mu.Lock()
-	defer sn.mu.Unlock()
-
-	sn.Nodes[n.Self.ID] = n
 }

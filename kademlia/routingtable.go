@@ -2,6 +2,7 @@ package kademliadfs
 
 import (
 	"container/list"
+	"context"
 	"sync"
 )
 
@@ -28,7 +29,7 @@ func NewRoutingTable(selfID NodeId, ping pingFunc) *RoutingTable {
 	return rt
 }
 
-func (rt *RoutingTable) Update(c Contact) {
+func (rt *RoutingTable) Update(ctx context.Context, c Contact) {
 	idx := rt.GetBucketIndex(rt.SelfID, c.ID)
 
 	// index is -1 if the contact is itself
@@ -52,7 +53,7 @@ func (rt *RoutingTable) Update(c Contact) {
 		leastRecentlySeenContact := bucket.Contacts.Back().Value.(Contact)
 		bucket.mu.Unlock()
 		// release the lock before calling ping not to wait for network
-		isAlive := rt.Ping(leastRecentlySeenContact)
+		isAlive := rt.Ping(ctx, leastRecentlySeenContact)
 		bucket.mu.Lock()
 		if !isAlive {
 			lruElem := bucket.Contacts.Back()
@@ -67,7 +68,7 @@ func (rt *RoutingTable) Update(c Contact) {
 	bucket.Contacts.PushFront(c)
 }
 
-type pingFunc func(recipient Contact) bool
+type pingFunc func(ctx context.Context, recipient Contact) bool
 
 /*
 We dump all of the contacts from each bucket into the contact sorter and

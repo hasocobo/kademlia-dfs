@@ -1,21 +1,24 @@
 package kademliadfs
 
 import (
+	"context"
+	"math/rand/v2"
 	"net"
 	"testing"
 )
 
 func TestIntegration_NodesJoinAndStoreKVPAirUDP(t *testing.T) {
-	t.Parallel()
 	clusterSize := 1000
 	udpIp := net.IPv4(127, 0, 0, 1)
 	bootstrapPort := 10000
+
+	ctx := context.Background()
 
 	bootstrapNodeNetwork, err := NewUDPNetwork(udpIp, bootstrapPort)
 	if err != nil {
 		t.Fatalf("error creating bootstrap node: %v", err)
 	}
-	bootstrapNode := NewNode(NodeId{}, udpIp, bootstrapPort, bootstrapNodeNetwork)
+	bootstrapNode := NewNode(ctx, NodeId{}, udpIp, bootstrapPort, bootstrapNodeNetwork)
 	bootstrapNodeNetwork.SetHandler(bootstrapNode)
 
 	go bootstrapNodeNetwork.Listen()
@@ -32,7 +35,7 @@ func TestIntegration_NodesJoinAndStoreKVPAirUDP(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		testNodes[i] = NewNode(NewRandomId(), udpIp, testPorts[i], testNetworks[i])
+		testNodes[i] = NewNode(ctx, NewRandomId(), udpIp, testPorts[i], testNetworks[i])
 		testNetworks[i].SetHandler(testNodes[i])
 
 		go testNetworks[i].Listen()
@@ -40,7 +43,7 @@ func TestIntegration_NodesJoinAndStoreKVPAirUDP(t *testing.T) {
 
 	for i := range clusterSize {
 		//	start := time.Now()
-		err := testNodes[i].Join(bootstrapNode.Self)
+		err := testNodes[i].Join(ctx, bootstrapNode.Self)
 		if err != nil {
 			t.Fatalf("error joining bootstrapNode of node id: %v, address: %v:%v", testNodes[i].Self.ID,
 				testNodes[i].Self.IP, testNodes[i].Self.Port)
@@ -54,12 +57,12 @@ func TestIntegration_NodesJoinAndStoreKVPAirUDP(t *testing.T) {
 	key := "hello"
 	value := "world"
 
-	nodeToTest := testNodes[clusterSize/2]
-
-	nodeToTest.Put(key, []byte(value))
+	nodeToPut := testNodes[rand.IntN(clusterSize)]
+	nodeToGet := testNodes[rand.IntN(clusterSize)]
+	nodeToPut.Put(ctx, key, []byte(value))
 
 	// verify the value is retrievable
-	retrievedValue, err := nodeToTest.Get(key)
+	retrievedValue, err := nodeToGet.Get(ctx, key)
 	if err != nil {
 		t.Fatalf("error getting value: %v", err)
 	}
