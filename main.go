@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"flag"
 	"log"
@@ -32,6 +33,8 @@ func main() {
 		udpIp = bootstrapNodeIpAddress
 	}
 
+	ctx := context.Background()
+
 	udpNetwork, err := kademliadfs.NewUDPNetwork(udpIp, udpPort)
 	if err != nil {
 		log.Fatal(err)
@@ -39,16 +42,16 @@ func main() {
 	var node *kademliadfs.Node
 
 	if isBootstrapNode {
-		node = kademliadfs.NewNode(kademliadfs.NodeId{}, udpIp, udpPort, udpNetwork)
+		node = kademliadfs.NewNode(ctx, kademliadfs.NodeId{}, udpIp, udpPort, udpNetwork)
 	} else {
-		node = kademliadfs.NewNode(kademliadfs.NewRandomId(), udpIp, udpPort, udpNetwork)
+		node = kademliadfs.NewNode(ctx, kademliadfs.NewRandomId(), udpIp, udpPort, udpNetwork)
 		// TODO: ID is not known so we need to call ping first
 	}
 	udpNetwork.SetHandler(node)
 	go udpNetwork.Listen()
 
 	if !isBootstrapNode {
-		node.Join(kademliadfs.Contact{IP: bootstrapNodeIpAddress, Port: bootstrapNodePort, ID: kademliadfs.NodeId{}})
+		node.Join(ctx, kademliadfs.Contact{IP: bootstrapNodeIpAddress, Port: bootstrapNodePort, ID: kademliadfs.NodeId{}})
 	}
 
 	type KV struct {
@@ -62,7 +65,7 @@ func main() {
 					var kv KV
 					log.Println("handling a put request")
 					json.NewDecoder(r.Body).Decode(&kv)
-					err := node.Put(kv.Key, []byte(kv.Value))
+					err := node.Put(ctx, kv.Key, []byte(kv.Value))
 					if err != nil {
 						log.Printf("error putting key value pair: %v \n", err)
 						w.WriteHeader(500)
@@ -72,7 +75,7 @@ func main() {
 					var kv KV
 					log.Println("handling a get request")
 					json.NewDecoder(r.Body).Decode(&kv)
-					value, err := node.Get(kv.Key)
+					value, err := node.Get(ctx, kv.Key)
 					if err != nil {
 						log.Printf("error putting key value pair: %v \n", err)
 						w.WriteHeader(500)
