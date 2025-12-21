@@ -8,6 +8,8 @@ import (
 	"net"
 	"net/http"
 	_ "net/http/pprof"
+	"os"
+	"strconv"
 
 	kademliadfs "github.com/hasocobo/kademlia-dfs/kademlia"
 )
@@ -58,40 +60,57 @@ func main() {
 		Key   string
 		Value string
 	}
-	if isBootstrapNode {
-		go func() {
-			http.HandleFunc("/kv", func(w http.ResponseWriter, r *http.Request) {
-				if r.Method == "PUT" {
-					var kv KV
-					log.Println("handling a put request")
-					json.NewDecoder(r.Body).Decode(&kv)
-					err := node.Put(ctx, kv.Key, []byte(kv.Value))
-					if err != nil {
-						log.Printf("error putting key value pair: %v \n", err)
-						w.WriteHeader(500)
-					}
-					w.WriteHeader(201)
-				} else if r.Method == "GET" {
-					var kv KV
-					log.Println("handling a get request")
-					json.NewDecoder(r.Body).Decode(&kv)
-					value, err := node.Get(ctx, kv.Key)
-					if err != nil {
-						log.Printf("error putting key value pair: %v \n", err)
-						w.WriteHeader(500)
-					}
-					kv.Value = string(value[:])
-					w.WriteHeader(200)
-					resp, err := json.Marshal(kv)
-					if err != nil {
-						log.Printf("error marshaling key value pair :%v", err)
-					}
-					w.Write(resp)
-				}
-			})
-			log.Println("listening on 0.0.0.0:8080")
-			log.Fatal(http.ListenAndServe("0.0.0.0:8080", nil))
-		}()
+
+	type WasmTask struct {
+		WasmProgram os.File
+		InputFile   os.File
 	}
+
+	go func() {
+		http.HandleFunc("/kv", func(w http.ResponseWriter, r *http.Request) {
+			if r.Method == "PUT" {
+				var kv KV
+				log.Println("handling a put request")
+				json.NewDecoder(r.Body).Decode(&kv)
+				err := node.Put(ctx, kv.Key, []byte(kv.Value))
+				if err != nil {
+					log.Printf("error putting key value pair: %v \n", err)
+					w.WriteHeader(500)
+				}
+				w.WriteHeader(201)
+			} else if r.Method == "GET" {
+				var kv KV
+				log.Println("handling a get request")
+				json.NewDecoder(r.Body).Decode(&kv)
+				value, err := node.Get(ctx, kv.Key)
+				if err != nil {
+					log.Printf("error putting key value pair: %v \n", err)
+					w.WriteHeader(500)
+				}
+				kv.Value = string(value[:])
+				w.WriteHeader(200)
+				resp, err := json.Marshal(kv)
+				if err != nil {
+					log.Printf("error marshaling key value pair :%v", err)
+				}
+				w.Write(resp)
+			}
+		})
+
+		http.HandleFunc("/wasm", func(w http.ResponseWriter, r *http.Request) {
+			if r.Method == "POST" {
+				var wt WasmTask
+				log.Printf("handling a post request :%v\n", r.URL)
+				json.NewDecoder(r.Body).Decode(&wt)
+				if err != nil {
+					log.Printf("error putting key value pair: %v \n", err)
+					w.WriteHeader(500)
+				}
+				w.WriteHeader(201)
+			}
+		})
+		log.Println("listening on 0.0.0.0:" + strconv.Itoa((port + 1000)))
+		log.Fatal(http.ListenAndServe("0.0.0.0:"+strconv.Itoa((port+1000)), nil))
+	}()
 	select {} // Block main to keep the program alive to run goroutines
 }
