@@ -2,80 +2,104 @@ package runtime
 
 import (
 	"context"
-	"crypto/tls"
+	"encoding/binary"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"os"
 
-	quic "github.com/quic-go/quic-go"
 	"github.com/tetratelabs/wazero"
 	"github.com/tetratelabs/wazero/imports/wasi_snapshot_preview1"
 )
 
 type WasmRuntime struct {
-	quicConn *net.UDPConn
+	network Network
 }
-
-func NewWasmRuntime(laddr *net.UDPAddr) (*WasmRuntime, error) {
-	conn, err := net.ListenUDP("udp4", laddr)
-	if err != nil {
-		return nil, fmt.Errorf("error creating new wasm runtime: %v", err)
-	}
-	return &WasmRuntime{quicConn: conn}, nil
-}
-
 type WasmTask struct {
 	WasmBinaryLength uint64
 	WasmBinary       []byte
 	InputFile        os.File
 }
 
-func (wt *WasmRuntime) ListenQuic() error {
-	ctx := context.Background()
-	tr := quic.Transport{
-		Conn: wt.quicConn,
-	}
+func NewWasmRuntime(n Network) (*WasmRuntime, error) {
+	return &WasmRuntime{network: n}, nil
+}
 
-	ln, err := tr.Listen(&tls.Config{}, &quic.Config{})
+func (wr *WasmRuntime) Serve(addr string) error {
+	ln, err := wr.network.Listen(addr)
 	if err != nil {
-		return fmt.Errorf("error listening quic: %v", err)
+		return fmt.Errorf("error creating listener: %v", err)
 	}
+	log.Printf("listening tcp on %v", addr)
 	defer ln.Close()
 
 	for {
-		conn, err := ln.Accept(ctx)
+		conn, err := ln.Accept()
 		if err != nil {
-			return err
+			log.Printf("error accepting packet: %v", err)
+			continue
 		}
-		go func() {
-			packet, err := conn.AcceptStream(ctx)
+
+		go func(conn net.Conn) {
+			packet, err := io.ReadAll(conn)
 			if err != nil {
+				log.Printf("error accepting packet: %v", err)
 				return
 			}
-			var buf []byte
-			n, _ := packet.Read(buf)
 
-			data := buf[:n]
+			data := wr.Decode(packet)
 
-			wasmTask := wt.Decode(data)
-
-			if wasmTask.WasmBinaryLength != 0 {
-				wt.Run(wasmTask.WasmBinary)
+			if len(data.WasmBinary) == 0 {
+				return
 			}
-		}()
+
+			wr.Run(data.WasmBinary)
+		}(conn)
 	}
 }
 
-func (wt *WasmRuntime) Encode(task WasmTask) []byte {
+func (wr *WasmRuntime) SendTask(data []byte, addr string) error {
+	conn, err := wr.network.Dial(addr)
+	if err != nil {
+		return fmt.Errorf("error dialing %v: %v", addr, err)
+	}
+	defer conn.Close()
+
+	_, writeErr := conn.Write(data)
+	if writeErr != nil {
+		return fmt.Errorf("error writing to %v: %v", addr, err)
+	}
+
 	return nil
 }
 
-func (wt *WasmRuntime) Decode(b []byte) WasmTask {
-	return WasmTask{}
+func (wr *WasmRuntime) Encode(task WasmTask) ([]byte, error) {
+	encodedMessage := make([]byte, 0)
+	var err error
+
+	encodedMessage, err = binary.Append(encodedMessage, binary.BigEndian, task.WasmBinaryLength)
+	if err != nil {
+		return nil, fmt.Errorf("failed encoding messageId: %v", err)
+	}
+
+	encodedMessage, err = binary.Append(encodedMessage, binary.BigEndian, task.WasmBinary)
+	if err != nil {
+		return nil, fmt.Errorf("failed encoding messageId: %v", err)
+	}
+
+	return encodedMessage, nil
 }
 
-func (wt *WasmRuntime) Run(wasmBinary []byte) {
+func (wr *WasmRuntime) Decode(data []byte) WasmTask {
+	length := binary.BigEndian.Uint64(data[:8])
+
+	data = data[8:]
+	wasmBinary := data[:length]
+	return WasmTask{WasmBinary: wasmBinary, WasmBinaryLength: length}
+}
+
+func (wr *WasmRuntime) Run(wasmBinary []byte) {
 	ctx := context.Background()
 
 	r := wazero.NewRuntime(ctx)

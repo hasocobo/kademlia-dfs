@@ -2,22 +2,27 @@ package main
 
 import (
 	"context"
+	_ "embed"
 	"encoding/json"
 	"flag"
+	"fmt"
 	"log"
 	"net"
 	"net/http"
 	_ "net/http/pprof"
-	"os"
 	"strconv"
 
 	kademliadfs "github.com/hasocobo/kademlia-dfs/kademlia"
+	"github.com/hasocobo/kademlia-dfs/runtime"
 )
+
+//go:embed runtime/main.wasm
+var wasmAdd []byte
 
 func main() {
 	ipPtr := flag.String("ip", "127.0.0.1", "usage: -ip=127.0.0.1")
 	portPtr := flag.Int("port", 9999, "-port=9999")
-	bootstrapNodeIpPtr := flag.String("bootstrap-ip", "0.0.0.0", "usage: -ip=0.0.0.0")
+	bootstrapNodeIpPtr := flag.String("bootstrap-ip", "127.0.0.1", "usage: -ip=127.0.0.1")
 	bootstrapNodePortPtr := flag.Int("bootstrap-port", 9000, "-port=9000")
 	isBootstrapNodePtr := flag.Bool("is-bootstrap", false, "is-bootsrap=false")
 	flag.Parse()
@@ -56,14 +61,14 @@ func main() {
 		node.Join(ctx, kademliadfs.Contact{IP: bootstrapNodeIpAddress, Port: bootstrapNodePort, ID: kademliadfs.NodeId{}})
 	}
 
+	tcpNetwork := runtime.TCPNetwork{}
+	wasmRuntime, _ := runtime.NewWasmRuntime(&tcpNetwork)
+
+	go wasmRuntime.Serve(fmt.Sprintf("%v:%v", node.Self.IP, node.Self.Port+2000))
+
 	type KV struct {
 		Key   string
 		Value string
-	}
-
-	type WasmTask struct {
-		WasmProgram os.File
-		InputFile   os.File
 	}
 
 	go func() {
@@ -98,19 +103,30 @@ func main() {
 		})
 
 		http.HandleFunc("/wasm", func(w http.ResponseWriter, r *http.Request) {
-			if r.Method == "POST" {
-				var wt WasmTask
-				log.Printf("handling a post request :%v\n", r.URL)
-				json.NewDecoder(r.Body).Decode(&wt)
-				if err != nil {
-					log.Printf("error putting key value pair: %v \n", err)
-					w.WriteHeader(500)
+			if r.Method == "GET" {
+				var wt runtime.WasmTask
+				log.Printf("sending task to other nodes :%v\n", r.URL)
+				nodesToSendCode := node.RoutingTable.FindClosest(kademliadfs.NewRandomId(), 8)
+				wt = runtime.WasmTask{
+					WasmBinary:       wasmAdd,
+					WasmBinaryLength: uint64(len(wasmAdd)),
 				}
-				w.WriteHeader(201)
+
+				log.Printf("yo thyo the length is %v", uint64(len(wasmAdd)))
+				encodedWasmTask, err := wasmRuntime.Encode(wt)
+				if err != nil {
+					log.Printf("error encoding wasm task: %v", err)
+				}
+
+				for _, node := range nodesToSendCode {
+					log.Println(node)
+					wasmRuntime.SendTask(encodedWasmTask, fmt.Sprintf("%v:%v", node.IP, node.Port+2000))
+				}
+				w.WriteHeader(200)
 			}
 		})
-		log.Println("listening on 0.0.0.0:" + strconv.Itoa((port + 1000)))
-		log.Fatal(http.ListenAndServe("0.0.0.0:"+strconv.Itoa((port+1000)), nil))
+		log.Println("listening http on 127.0.0.1:" + strconv.Itoa((port + 1000)))
+		log.Fatal(http.ListenAndServe("127.0.0.1:"+strconv.Itoa((port+1000)), nil))
 	}()
 	select {} // Block main to keep the program alive to run goroutines
 }
