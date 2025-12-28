@@ -7,7 +7,6 @@ import (
 	"io"
 	"log"
 	"net"
-	"os"
 
 	"github.com/tetratelabs/wazero"
 	"github.com/tetratelabs/wazero/imports/wasi_snapshot_preview1"
@@ -19,7 +18,7 @@ type WasmRuntime struct {
 type WasmTask struct {
 	WasmBinaryLength uint64
 	WasmBinary       []byte
-	InputFile        os.File
+	InputFile        []byte
 }
 
 func NewWasmRuntime(n Network) (*WasmRuntime, error) {
@@ -64,6 +63,7 @@ func (wr *WasmRuntime) SendTask(data []byte, addr string) error {
 	if err != nil {
 		return fmt.Errorf("error dialing %v: %v", addr, err)
 	}
+	log.Printf("sending task to :%v", addr)
 	defer conn.Close()
 
 	_, writeErr := conn.Write(data)
@@ -109,9 +109,9 @@ func (wr *WasmRuntime) Run(wasmBinary []byte) {
 	config := wazero.NewModuleConfig().WithStartFunctions("_initialize")
 
 	mod, _ := r.InstantiateWithConfig(ctx, wasmBinary, config)
-	res, err := mod.ExportedFunction("add").Call(ctx, 1, 2)
+	res, err := mod.ExportedFunction("run").Call(ctx, 5, 8)
 	if err != nil {
 		log.Printf("error calling func %v", err)
 	}
-	log.Println(res)
+	log.Printf("result of the operation: %v", int32(res[0]))
 }

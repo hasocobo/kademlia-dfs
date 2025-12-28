@@ -16,8 +16,13 @@ import (
 	"github.com/hasocobo/kademlia-dfs/runtime"
 )
 
-//go:embed runtime/main.wasm
+//go:embed runtime/binaries/add.wasm
 var wasmAdd []byte
+
+//go:embed runtime/binaries/subtract.wasm
+var wasmSubtract []byte
+
+var storedBinaries map[string][]byte
 
 func main() {
 	ipPtr := flag.String("ip", "127.0.0.1", "usage: -ip=127.0.0.1")
@@ -64,12 +69,14 @@ func main() {
 	tcpNetwork := runtime.TCPNetwork{}
 	wasmRuntime, _ := runtime.NewWasmRuntime(&tcpNetwork)
 
-	go wasmRuntime.Serve(fmt.Sprintf("%v:%v", node.Self.IP, node.Self.Port+2000))
+	go wasmRuntime.Serve(fmt.Sprintf("%v:%v", "0.0.0.0", node.Self.Port+2000))
 
 	type KV struct {
 		Key   string
 		Value string
 	}
+
+	storedBinaries = map[string][]byte{"add": wasmAdd, "subtract": wasmSubtract}
 
 	go func() {
 		http.HandleFunc("/kv", func(w http.ResponseWriter, r *http.Request) {
@@ -102,17 +109,23 @@ func main() {
 			}
 		})
 
-		http.HandleFunc("/wasm", func(w http.ResponseWriter, r *http.Request) {
+		http.HandleFunc("/wasm/{binaryName}", func(w http.ResponseWriter, r *http.Request) {
 			if r.Method == "GET" {
 				var wt runtime.WasmTask
 				log.Printf("sending task to other nodes :%v\n", r.URL)
 				nodesToSendCode := node.RoutingTable.FindClosest(kademliadfs.NewRandomId(), 8)
-				wt = runtime.WasmTask{
-					WasmBinary:       wasmAdd,
-					WasmBinaryLength: uint64(len(wasmAdd)),
+				binaryName := r.PathValue("binaryName")
+				binary, exists := storedBinaries[binaryName]
+				if !exists {
+					w.WriteHeader(404)
+					return
 				}
 
-				log.Printf("yo thyo the length is %v", uint64(len(wasmAdd)))
+				wt = runtime.WasmTask{
+					WasmBinary:       binary,
+					WasmBinaryLength: uint64(len(binary)),
+				}
+
 				encodedWasmTask, err := wasmRuntime.Encode(wt)
 				if err != nil {
 					log.Printf("error encoding wasm task: %v", err)
@@ -120,6 +133,7 @@ func main() {
 
 				for _, node := range nodesToSendCode {
 					log.Println(node)
+					log.Printf("%v:%v", node.IP, node.Port+2000)
 					wasmRuntime.SendTask(encodedWasmTask, fmt.Sprintf("%v:%v", node.IP, node.Port+2000))
 				}
 				w.WriteHeader(200)
