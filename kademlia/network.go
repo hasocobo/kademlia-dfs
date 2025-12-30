@@ -516,7 +516,7 @@ func (network *UDPNetwork) handleIncomingRequest(ctx context.Context, message *R
 		network.mu.Unlock()
 
 		if !exists {
-			fmt.Printf("request channel for Pong response is closed\n")
+			log.Printf("request channel for Pong response is closed\n")
 			return
 		}
 		responseChannel <- rpcResponse{} // no need for contacts since ping doesn't need them
@@ -528,7 +528,7 @@ func (network *UDPNetwork) handleIncomingRequest(ctx context.Context, message *R
 		network.mu.Unlock()
 
 		if !exists {
-			fmt.Printf("request channel for StoreResponse is closed\n")
+			log.Printf("request channel for StoreResponse is closed\n")
 			return
 		}
 		responseChannel <- rpcResponse{} // no need for contacts since store response doesn't need them
@@ -540,7 +540,7 @@ func (network *UDPNetwork) handleIncomingRequest(ctx context.Context, message *R
 		network.mu.Unlock()
 
 		if !exists {
-			fmt.Printf("request channel FindNodeReponse is closed\n")
+			log.Printf("request channel FindNodeReponse is closed\n")
 			return
 		}
 		responseChannel <- rpcResponse{Contacts: message.Contacts}
@@ -551,7 +551,7 @@ func (network *UDPNetwork) handleIncomingRequest(ctx context.Context, message *R
 		responseChannel, exists := network.pending[message.MessageID]
 		network.mu.Unlock()
 		if !exists {
-			fmt.Printf("request channel for FindValueResponse is closed \n")
+			log.Printf("request channel for FindValueResponse is closed \n")
 			return
 		}
 		responseChannel <- rpcResponse{Contacts: message.Contacts, Value: message.Value}

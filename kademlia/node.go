@@ -47,6 +47,7 @@ func NewRandomId() NodeId {
 	var randomID NodeId
 	_, err := rand.Read(randomID[:]) // This fills randomId variable with random bytes
 	if err != nil {
+		// TODO: add error returns
 		fmt.Sprintf("failed to generate random NodeId: %v", err)
 	}
 	return randomID

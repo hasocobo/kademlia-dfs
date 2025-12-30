@@ -13,7 +13,7 @@ import (
 	"strconv"
 
 	kademliadfs "github.com/hasocobo/kademlia-dfs/kademlia"
-	"github.com/hasocobo/kademlia-dfs/runtime"
+	runtime "github.com/hasocobo/kademlia-dfs/runtime"
 )
 
 //go:embed runtime/binaries/add.wasm
