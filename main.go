@@ -25,9 +25,9 @@ var wasmSubtract []byte
 var storedBinaries map[string][]byte
 
 func main() {
-	ipPtr := flag.String("ip", "127.0.0.1", "usage: -ip=127.0.0.1")
+	ipPtr := flag.String("ip", "0.0.0.0", "usage: -ip=0.0.0.0")
 	portPtr := flag.Int("port", 9999, "-port=9999")
-	bootstrapNodeIpPtr := flag.String("bootstrap-ip", "127.0.0.1", "usage: -ip=127.0.0.1")
+	bootstrapNodeIpPtr := flag.String("bootstrap-ip", "0.0.0.0", "usage: -ip=0.0.0.0")
 	bootstrapNodePortPtr := flag.Int("bootstrap-port", 9000, "-port=9000")
 	isBootstrapNodePtr := flag.Bool("is-bootstrap", false, "is-bootsrap=false")
 	flag.Parse()
@@ -45,23 +45,67 @@ func main() {
 		udpIp = bootstrapNodeIpAddress
 	}
 
+	//	client, dialErr := stun.DialURI(uri, &stun.DialConfig{})
+	//	if dialErr != nil {
+	//		log.Fatalf("Failed to dial: %s", dialErr)
+	//	}
+	//
+	//	if stunErr = client.Do(stun.MustBuild(stun.TransactionID, stun.BindingRequest), func(res stun.Event) {
+	//		if res.Error != nil {
+	//			log.Fatalf("Failed STUN transaction: %s", res.Error)
+	//		}
+	//
+	//		var xorAddr stun.XORMappedAddress
+	//		if getErr := xorAddr.GetFrom(res.Message); getErr != nil {
+	//			log.Fatalf("Failed to get XOR-MAPPED-ADDRESS: %s", getErr)
+	//		}
+	//
+	//		log.Print(xorAddr)
+	//	}); stunErr != nil {
+	//		log.Fatal("Do:", stunErr)
+	//	}
+	//	if err := client.Close(); err != nil {
+	//		log.Fatalf("Failed to close connection: %s", err)
+	//	}
+
 	ctx := context.Background()
 
 	udpNetwork, err := kademliadfs.NewUDPNetwork(udpIp, udpPort)
 	if err != nil {
 		log.Fatal(err)
 	}
+
 	var node *kademliadfs.Node
 
-	if isBootstrapNode {
-		node = kademliadfs.NewNode(ctx, kademliadfs.NodeId{}, udpIp, udpPort, udpNetwork)
-	} else {
-		node = kademliadfs.NewNode(ctx, kademliadfs.NewRandomId(), udpIp, udpPort, udpNetwork)
-		// TODO: ID is not known so we need to call ping first
-	}
 	udpNetwork.SetHandler(node)
 	go udpNetwork.Listen()
 
+	if stunErr := udpNetwork.SendSTUNRequest(ctx); stunErr != nil {
+		log.Print(stunErr)
+	}
+
+	if udpNetwork.PublicAddr == nil {
+		log.Println("failed determining public address, switching to local address")
+	}
+
+	if isBootstrapNode {
+		if udpNetwork.PublicAddr != nil {
+			node = kademliadfs.NewNode(ctx, kademliadfs.NodeId{},
+				udpNetwork.PublicAddr.IP, udpNetwork.PublicAddr.Port, udpNetwork)
+		} else {
+			node = kademliadfs.NewNode(ctx, kademliadfs.NodeId{},
+				udpIp, udpPort, udpNetwork)
+		}
+	} else {
+		if udpNetwork.PublicAddr != nil {
+			node = kademliadfs.NewNode(ctx, kademliadfs.NewRandomId(),
+				udpNetwork.PublicAddr.IP, udpNetwork.PublicAddr.Port, udpNetwork)
+		} else {
+			node = kademliadfs.NewNode(ctx, kademliadfs.NewRandomId(),
+				udpIp, udpPort, udpNetwork)
+		}
+		// TODO: ID is not known so we need to call ping first
+	}
 	if !isBootstrapNode {
 		node.Join(ctx, kademliadfs.Contact{IP: bootstrapNodeIpAddress, Port: bootstrapNodePort, ID: kademliadfs.NodeId{}})
 	}

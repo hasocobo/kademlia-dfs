@@ -12,7 +12,7 @@ tasks:
     silent: true
   build:
     cmds:
-      - rm cmd/kademlia
+      - rm -f "cmd/kademlia"
       - go build -o cmd/kademlia
   run:
     deps: [build]

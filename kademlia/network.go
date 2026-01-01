@@ -8,6 +8,8 @@ import (
 	"net"
 	"sync"
 	"time"
+
+	"github.com/pion/stun/v3"
 )
 
 const (
@@ -28,6 +30,9 @@ type UDPNetwork struct {
 	conn       *net.UDPConn
 	pending    map[NodeId]chan rpcResponse
 	rpcHandler RpcHandler
+
+	PublicAddr   *net.UDPAddr // sent and received via stun protocol
+	publicAddrCh chan *net.UDPAddr
 
 	requestQueue chan UDPRequest
 	mu           sync.Mutex
@@ -54,6 +59,7 @@ func NewUDPNetwork(ip net.IP, port int) (*UDPNetwork, error) {
 	udpNetwork := &UDPNetwork{
 		conn:         udpConn,
 		pending:      make(map[NodeId]chan rpcResponse),
+		publicAddrCh: make(chan *net.UDPAddr, 1),
 		requestQueue: make(chan UDPRequest, packetBufferLimit),
 	}
 
@@ -563,6 +569,7 @@ func (network *UDPNetwork) handleIncomingRequest(ctx context.Context, message *R
 
 func (network *UDPNetwork) Listen() error {
 	defer network.conn.Close()
+
 	for {
 		buf := make([]byte, MaxUDPPacketSize)
 		n, addr, err := network.conn.ReadFromUDP(buf)
@@ -570,19 +577,67 @@ func (network *UDPNetwork) Listen() error {
 			return fmt.Errorf("error reading from UDP: %v", err)
 		}
 		data := buf[:n]
-		decodedMessage, err := network.Decode(data)
-		if err != nil {
-			log.Printf("failed to decode UDP packet from %v: %v\n", addr, err)
-			continue
-		}
+		if stun.IsMessage(data) {
+			msg := &stun.Message{Raw: data}
 
-		select {
-		case network.requestQueue <- UDPRequest{message: decodedMessage, address: addr}:
+			if err := msg.Decode(); err != nil {
+				log.Printf("error decoding stun packet: %v", err)
+				continue
+			}
 
-		default:
-			log.Printf("request queue is full, dropping package from %v", addr)
+			var xorAddr stun.XORMappedAddress
+			if getErr := xorAddr.GetFrom(msg); getErr != nil {
+				log.Printf("Failed to get XOR-MAPPED-ADDRESS: %s", getErr)
+				continue
+			}
+			log.Printf("my address is: %v", xorAddr.String())
+			network.PublicAddr = &net.UDPAddr{IP: xorAddr.IP, Port: xorAddr.Port}
+			network.publicAddrCh <- network.PublicAddr
+		} else {
+
+			decodedMessage, err := network.Decode(data)
+			if err != nil {
+				log.Printf("failed to decode UDP packet from %v: %v\n", addr, err)
+				continue
+			}
+
+			select {
+			case network.requestQueue <- UDPRequest{message: decodedMessage, address: addr}:
+
+			default:
+				log.Printf("request queue is full, dropping package from %v", addr)
+			}
 		}
 	}
+}
+
+func (network *UDPNetwork) SendSTUNRequest(ctx context.Context) error {
+	ctx, cancel := context.WithTimeout(ctx, time.Millisecond*5000)
+	defer cancel()
+
+	stunURIStr := "stun.l.google.com:19302"
+	uri, resolveErr := net.ResolveUDPAddr("udp", stunURIStr)
+	if resolveErr != nil {
+		log.Fatalf("error parsing stun server uri : %v", resolveErr)
+	}
+
+	req := stun.MustBuild(stun.TransactionID, stun.BindingRequest)
+	log.Println("sending stun request")
+	_, err := network.conn.WriteToUDP(req.Raw, uri)
+	if err != nil {
+		return fmt.Errorf("error sending stun request: %v", err)
+	}
+
+	select {
+	case <-network.publicAddrCh:
+	case <-ctx.Done():
+		return fmt.Errorf("timeout waiting for stun response")
+	}
+	return nil
+}
+
+func (network *UDPNetwork) GetPublicIPDetails() *net.UDPConn {
+	return network.conn
 }
 
 // Helper to truncate NodeId for logging
