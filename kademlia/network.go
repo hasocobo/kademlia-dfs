@@ -405,6 +405,10 @@ func (network *UDPNetwork) Encode(message *RpcMessage) ([]byte, error) {
 func (network *UDPNetwork) requestHandlerWorker(ctx context.Context) error {
 	for {
 		request := <-network.requestQueue
+		if network.rpcHandler == nil {
+			log.Println("rpc handler is not yet set")
+			continue
+		}
 		network.handleIncomingRequest(ctx, request.message, request.address)
 	}
 }

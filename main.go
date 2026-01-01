@@ -77,7 +77,6 @@ func main() {
 
 	var node *kademliadfs.Node
 
-	udpNetwork.SetHandler(node)
 	go udpNetwork.Listen()
 
 	if stunErr := udpNetwork.SendSTUNRequest(ctx); stunErr != nil {
@@ -106,6 +105,7 @@ func main() {
 		}
 		// TODO: ID is not known so we need to call ping first
 	}
+	udpNetwork.SetHandler(node)
 	if !isBootstrapNode {
 		node.Join(ctx, kademliadfs.Contact{IP: bootstrapNodeIpAddress, Port: bootstrapNodePort, ID: kademliadfs.NodeId{}})
 	}
