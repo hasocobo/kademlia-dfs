@@ -295,6 +295,7 @@ func (node *Node) Join(ctx context.Context, bootstrapNode Contact) error {
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
+
 	node.RoutingTable.Update(ctx, bootstrapNode)
 
 	node.Lookup(ctx, node.Self.ID)

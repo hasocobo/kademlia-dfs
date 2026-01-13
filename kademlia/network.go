@@ -55,17 +55,16 @@ func NewUDPNetwork(ip net.IP, port int) (*UDPNetwork, error) {
 	}
 
 	log.Printf("Listening on %v\n", udpConn.LocalAddr().String())
-
+	ctx := context.Background()
 	udpNetwork := &UDPNetwork{
 		conn:         udpConn,
 		pending:      make(map[NodeId]chan rpcResponse),
 		publicAddrCh: make(chan *net.UDPAddr, 1),
 		requestQueue: make(chan UDPRequest, packetBufferLimit),
 	}
-
 	// create n=workerPoolSize workers with timeout
 	for range workerPoolSize {
-		go udpNetwork.requestHandlerWorker(context.Background())
+		go udpNetwork.requestHandlerWorker(ctx)
 	}
 
 	return udpNetwork, nil
@@ -97,7 +96,7 @@ func (network *UDPNetwork) FindNode(ctx context.Context, requester Contact, reci
 		network.mu.Unlock()
 	}()
 	log.Printf("[SEND] FindNodeRequest to=%s port=%v key=%s", truncateID(recipient.ID), recipient.Port, truncateID(targetID))
-	msgToSend, err := network.Encode(rpcMessage)
+	msgToSend, err := Encode(rpcMessage)
 	if err != nil {
 		return nil, fmt.Errorf("error encoding message: %v", err)
 	}
@@ -147,7 +146,7 @@ func (network *UDPNetwork) FindValue(ctx context.Context, requester Contact, rec
 	}()
 
 	log.Printf("[SEND] FindValueRequest to=%s port=%v key=%s", truncateID(recipient.ID), recipient.Port, truncateID(key))
-	msgToSend, err := network.Encode(rpcMessage)
+	msgToSend, err := Encode(rpcMessage)
 	if err != nil {
 		return nil, nil, fmt.Errorf("error encoding message: %v", err)
 	}
@@ -201,7 +200,7 @@ func (network *UDPNetwork) Ping(ctx context.Context, requester Contact, recipien
 	}()
 
 	log.Printf("[SEND] Ping to=%s port=%v", truncateID(recipient.ID), recipient.Port)
-	msgToSend, err := network.Encode(rpcMessage)
+	msgToSend, err := Encode(rpcMessage)
 	if err != nil {
 		return fmt.Errorf("error encoding message: %v", err)
 	}
@@ -244,7 +243,7 @@ func (network *UDPNetwork) Store(ctx context.Context, requester Contact, recipie
 
 	log.Printf("[SEND] StoreRequest to=%s port=%d key=%s valueLen=%d", truncateID(recipient.ID), recipient.Port, truncateID(key), len(value))
 
-	msgToSend, err := network.Encode(rpcMessage)
+	msgToSend, err := Encode(rpcMessage)
 	if err != nil {
 		return fmt.Errorf("error encoding message: %v", err)
 	}
@@ -299,10 +298,17 @@ func (network *UDPNetwork) SetHandler(rpcHandler RpcHandler) {
 }
 
 // Decode converts raw UDP packet bytes to RpcMessage struct
-func (network *UDPNetwork) Decode(packet []byte) (*RpcMessage, error) {
+func Decode(packet []byte) (*RpcMessage, error) {
 	if len(packet) == 0 {
 		return nil, fmt.Errorf("packet length is invalid: %d", len(packet))
 	}
+
+	_magicBytePrefix := packet[0]
+	if _magicBytePrefix != magicBytePrefix {
+		return nil, fmt.Errorf("error decoding: first byte must match the magicBytePrefix want: %v, got: %v", magicBytePrefix, _magicBytePrefix)
+	}
+	packet = packet[1:]
+
 	messageId := packet[:idLength]
 	packet = packet[idLength:]
 
@@ -352,9 +358,14 @@ func (network *UDPNetwork) Decode(packet []byte) (*RpcMessage, error) {
 }
 
 // Encode takes RpcMessage struct and converts it to raw UDP bytes
-func (network *UDPNetwork) Encode(message *RpcMessage) ([]byte, error) {
+func Encode(message *RpcMessage) ([]byte, error) {
 	encodedMessage := make([]byte, 0)
 	var err error
+
+	encodedMessage, err = binary.Append(encodedMessage, binary.BigEndian, magicBytePrefix)
+	if err != nil {
+		return nil, fmt.Errorf("failed encoding messageId: %v", err)
+	}
 
 	encodedMessage, err = binary.Append(encodedMessage, binary.BigEndian, message.MessageID)
 	if err != nil {
@@ -431,7 +442,7 @@ func (network *UDPNetwork) handleIncomingRequest(ctx context.Context, message *R
 			ContactsLength: 0,
 			Contacts:       nil,
 		}
-		encodedMessage, err := network.Encode(pingResponse)
+		encodedMessage, err := Encode(pingResponse)
 		if err != nil {
 			log.Printf("error encoding Pong response: %v\n", err)
 			return
@@ -457,7 +468,7 @@ func (network *UDPNetwork) handleIncomingRequest(ctx context.Context, message *R
 			ContactsLength: uint64(len(contacts)),
 			Contacts:       contacts,
 		}
-		encodedMessage, err := network.Encode(findNodeResponse)
+		encodedMessage, err := Encode(findNodeResponse)
 		if err != nil {
 			log.Printf("error encoding FindNodeResponse: %v\n", err)
 			return
@@ -482,7 +493,7 @@ func (network *UDPNetwork) handleIncomingRequest(ctx context.Context, message *R
 			ContactsLength: uint64(len(contacts)),
 			Contacts:       contacts,
 		}
-		encodedMessage, err := network.Encode(findValueResponse)
+		encodedMessage, err := Encode(findValueResponse)
 		if err != nil {
 			log.Printf("error encoding FindValueResponse: %v\n", err)
 			return
@@ -507,7 +518,7 @@ func (network *UDPNetwork) handleIncomingRequest(ctx context.Context, message *R
 			ContactsLength: 0,
 			Contacts:       nil,
 		}
-		encodedMessage, err := network.Encode(storeResponse)
+		encodedMessage, err := Encode(storeResponse)
 		if err != nil {
 			log.Printf("error encoding StoreResponse: %v\n", err)
 			return
@@ -532,7 +543,8 @@ func (network *UDPNetwork) handleIncomingRequest(ctx context.Context, message *R
 		responseChannel <- rpcResponse{} // no need for contacts since ping doesn't need them
 
 	case StoreResponse:
-		log.Printf("[RECV] StoreResponse from=%s port=%d key=%s", truncateID(message.SelfNodeId), addr.Port, truncateID(message.Key))
+		log.Printf("[RECV] StoreResponse from=%s port=%d key=%s", truncateID(message.SelfNodeId),
+			addr.Port, truncateID(message.Key))
 		network.mu.Lock()
 		responseChannel, exists := network.pending[message.MessageID]
 		network.mu.Unlock()
@@ -544,7 +556,8 @@ func (network *UDPNetwork) handleIncomingRequest(ctx context.Context, message *R
 		responseChannel <- rpcResponse{} // no need for contacts since store response doesn't need them
 
 	case FindNodeResponse:
-		log.Printf("[RECV] FindNodeResponse from=%s port=%d contacts=%s", truncateID(message.SelfNodeId), addr.Port, formatContacts(message.Contacts))
+		log.Printf("[RECV] FindNodeResponse from=%s port=%d contacts=%s",
+			truncateID(message.SelfNodeId), addr.Port, formatContacts(message.Contacts))
 		network.mu.Lock()
 		responseChannel, exists := network.pending[message.MessageID]
 		network.mu.Unlock()
@@ -556,7 +569,8 @@ func (network *UDPNetwork) handleIncomingRequest(ctx context.Context, message *R
 		responseChannel <- rpcResponse{Contacts: message.Contacts}
 
 	case FindValueResponse:
-		log.Printf("[RECV] FindValueResponse from=%s port=%d contacts=%s", truncateID(message.SelfNodeId), addr.Port, formatContacts(message.Contacts))
+		log.Printf("[RECV] FindValueResponse from=%s port=%d contacts=%s",
+			truncateID(message.SelfNodeId), addr.Port, formatContacts(message.Contacts))
 		network.mu.Lock()
 		responseChannel, exists := network.pending[message.MessageID]
 		network.mu.Unlock()
@@ -591,7 +605,7 @@ func (network *UDPNetwork) Listen() error {
 
 			var xorAddr stun.XORMappedAddress
 			if getErr := xorAddr.GetFrom(msg); getErr != nil {
-				log.Printf("Failed to get XOR-MAPPED-ADDRESS: %s", getErr)
+				log.Printf("failed to get XOR-MAPPED-ADDRESS: %s", getErr)
 				continue
 			}
 			log.Printf("my address is: %v", xorAddr.String())
@@ -599,7 +613,7 @@ func (network *UDPNetwork) Listen() error {
 			network.publicAddrCh <- network.PublicAddr
 		} else {
 
-			decodedMessage, err := network.Decode(data)
+			decodedMessage, err := Decode(data)
 			if err != nil {
 				log.Printf("failed to decode UDP packet from %v: %v\n", addr, err)
 				continue
@@ -622,7 +636,7 @@ func (network *UDPNetwork) SendSTUNRequest(ctx context.Context) error {
 	stunURIStr := "stun.l.google.com:19302"
 	uri, resolveErr := net.ResolveUDPAddr("udp", stunURIStr)
 	if resolveErr != nil {
-		log.Fatalf("error parsing stun server uri : %v", resolveErr)
+		return fmt.Errorf("error parsing stun server uri : %v", resolveErr)
 	}
 
 	req := stun.MustBuild(stun.TransactionID, stun.BindingRequest)
@@ -640,8 +654,18 @@ func (network *UDPNetwork) SendSTUNRequest(ctx context.Context) error {
 	return nil
 }
 
-func (network *UDPNetwork) GetPublicIPDetails() *net.UDPConn {
-	return network.conn
+// GetOutboundIP gets the host IP by asking the router what its preferred local IP is
+func GetOutboundIP(ctx context.Context) (net.IP, error) {
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
+	conn, err := net.Dial("udp", "1.1.1.1:53")
+	if err != nil {
+		return nil, fmt.Errorf("error dialing: %v", err)
+	}
+	defer conn.Close()
+
+	return conn.LocalAddr().(*net.UDPAddr).IP, nil
 }
 
 // Helper to truncate NodeId for logging

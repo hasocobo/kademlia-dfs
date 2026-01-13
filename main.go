@@ -10,10 +10,13 @@ import (
 	"net"
 	"net/http"
 	_ "net/http/pprof"
+	"os"
+	"os/signal"
 	"strconv"
+	"syscall"
 
 	kademliadfs "github.com/hasocobo/kademlia-dfs/kademlia"
-	runtime "github.com/hasocobo/kademlia-dfs/runtime"
+	"github.com/hasocobo/kademlia-dfs/runtime"
 )
 
 //go:embed runtime/binaries/add.wasm
@@ -22,169 +25,203 @@ var wasmAdd []byte
 //go:embed runtime/binaries/subtract.wasm
 var wasmSubtract []byte
 
-var storedBinaries map[string][]byte
-
 func main() {
-	ipPtr := flag.String("ip", "0.0.0.0", "usage: -ip=0.0.0.0")
-	portPtr := flag.Int("port", 9999, "-port=9999")
-	bootstrapNodeIpPtr := flag.String("bootstrap-ip", "0.0.0.0", "usage: -ip=0.0.0.0")
-	bootstrapNodePortPtr := flag.Int("bootstrap-port", 9000, "-port=9000")
-	isBootstrapNodePtr := flag.Bool("is-bootstrap", false, "is-bootsrap=false")
-	flag.Parse()
-
-	ipAddress := net.ParseIP(*ipPtr)
-	port := *portPtr
-	bootstrapNodeIpAddress := net.ParseIP(*bootstrapNodeIpPtr)
-	bootstrapNodePort := *bootstrapNodePortPtr
-	isBootstrapNode := *isBootstrapNodePtr
+	ipAddress, port, bootstrapNodeIP, bootstrapNodePort, isBootstrapNode := parseFlags()
 
 	udpPort := port
-	udpIp := ipAddress
+	udpIP := ipAddress
+	nodeId := kademliadfs.NewRandomId()
+
 	if isBootstrapNode {
 		udpPort = bootstrapNodePort
-		udpIp = bootstrapNodeIpAddress
+		udpIP = bootstrapNodeIP
+		nodeId = kademliadfs.NodeId{}
 	}
-
-	//	client, dialErr := stun.DialURI(uri, &stun.DialConfig{})
-	//	if dialErr != nil {
-	//		log.Fatalf("Failed to dial: %s", dialErr)
-	//	}
-	//
-	//	if stunErr = client.Do(stun.MustBuild(stun.TransactionID, stun.BindingRequest), func(res stun.Event) {
-	//		if res.Error != nil {
-	//			log.Fatalf("Failed STUN transaction: %s", res.Error)
-	//		}
-	//
-	//		var xorAddr stun.XORMappedAddress
-	//		if getErr := xorAddr.GetFrom(res.Message); getErr != nil {
-	//			log.Fatalf("Failed to get XOR-MAPPED-ADDRESS: %s", getErr)
-	//		}
-	//
-	//		log.Print(xorAddr)
-	//	}); stunErr != nil {
-	//		log.Fatal("Do:", stunErr)
-	//	}
-	//	if err := client.Close(); err != nil {
-	//		log.Fatalf("Failed to close connection: %s", err)
-	//	}
 
 	ctx := context.Background()
 
-	udpNetwork, err := kademliadfs.NewUDPNetwork(udpIp, udpPort)
+	// udpNetwork, err := kademliadfs.NewUDPNetwork(udpIP, udpPort)
+	udpNetwork, err := kademliadfs.NewQUICNetwork(udpIP, udpPort)
 	if err != nil {
 		log.Fatal(err)
 	}
 
+	go udpNetwork.Listen(ctx)
+	//	if err := udpNetwork.SendSTUNRequest(ctx); err != nil {
+	//		log.Print(err)
+	//	}
+
 	var node *kademliadfs.Node
-
-	go udpNetwork.Listen()
-
-	if stunErr := udpNetwork.SendSTUNRequest(ctx); stunErr != nil {
-		log.Print(stunErr)
-	}
-
-	if udpNetwork.PublicAddr == nil {
-		log.Println("failed determining public address, switching to local address")
-	}
-
-	if isBootstrapNode {
-		if udpNetwork.PublicAddr != nil {
-			node = kademliadfs.NewNode(ctx, kademliadfs.NodeId{},
-				udpNetwork.PublicAddr.IP, udpNetwork.PublicAddr.Port, udpNetwork)
-		} else {
-			node = kademliadfs.NewNode(ctx, kademliadfs.NodeId{},
-				udpIp, udpPort, udpNetwork)
-		}
+	if udpNetwork.PublicAddr != nil {
+		node = kademliadfs.NewNode(ctx, nodeId, udpNetwork.PublicAddr.IP, udpNetwork.PublicAddr.Port, udpNetwork)
 	} else {
-		if udpNetwork.PublicAddr != nil {
-			node = kademliadfs.NewNode(ctx, kademliadfs.NewRandomId(),
-				udpNetwork.PublicAddr.IP, udpNetwork.PublicAddr.Port, udpNetwork)
-		} else {
-			node = kademliadfs.NewNode(ctx, kademliadfs.NewRandomId(),
-				udpIp, udpPort, udpNetwork)
+		localIP, err := kademliadfs.GetOutboundIP(ctx)
+		if err != nil {
+			log.Fatalf("error getting outbound ip: %v", err)
 		}
-		// TODO: ID is not known so we need to call ping first
+		log.Println("failed determining public address, switching to local address")
+		log.Println(localIP)
+		node = kademliadfs.NewNode(ctx, nodeId, localIP, udpPort, udpNetwork)
 	}
+
 	udpNetwork.SetHandler(node)
+
 	if !isBootstrapNode {
-		node.Join(ctx, kademliadfs.Contact{IP: bootstrapNodeIpAddress, Port: bootstrapNodePort, ID: kademliadfs.NodeId{}})
+		bootstrapContact := kademliadfs.Contact{
+			IP:   bootstrapNodeIP,
+			Port: bootstrapNodePort,
+			ID:   kademliadfs.NodeId{},
+		}
+		if err := node.Join(ctx, bootstrapContact); err != nil {
+			log.Printf("failed to join network: %v", err)
+		}
 	}
 
-	tcpNetwork := runtime.TCPNetwork{}
-	wasmRuntime, _ := runtime.NewWasmRuntime(&tcpNetwork)
-
-	go wasmRuntime.Serve(fmt.Sprintf("%v:%v", "0.0.0.0", node.Self.Port+2000))
-
-	type KV struct {
-		Key   string
-		Value string
+	tcpNetwork := &runtime.TCPNetwork{}
+	wasmRuntime, err := runtime.NewWasmRuntime(tcpNetwork)
+	if err != nil {
+		log.Fatal(err)
 	}
-
-	storedBinaries = map[string][]byte{"add": wasmAdd, "subtract": wasmSubtract}
 
 	go func() {
-		http.HandleFunc("/kv", func(w http.ResponseWriter, r *http.Request) {
-			if r.Method == "PUT" {
-				var kv KV
-				log.Println("handling a put request")
-				json.NewDecoder(r.Body).Decode(&kv)
-				err := node.Put(ctx, kv.Key, []byte(kv.Value))
-				if err != nil {
-					log.Printf("error putting key value pair: %v \n", err)
-					w.WriteHeader(500)
-				}
-				w.WriteHeader(201)
-			} else if r.Method == "GET" {
-				var kv KV
-				log.Println("handling a get request")
-				json.NewDecoder(r.Body).Decode(&kv)
-				value, err := node.Get(ctx, kv.Key)
-				if err != nil {
-					log.Printf("error putting key value pair: %v \n", err)
-					w.WriteHeader(500)
-				}
-				kv.Value = string(value[:])
-				w.WriteHeader(200)
-				resp, err := json.Marshal(kv)
-				if err != nil {
-					log.Printf("error marshaling key value pair :%v", err)
-				}
-				w.Write(resp)
-			}
-		})
-
-		http.HandleFunc("/wasm/{binaryName}", func(w http.ResponseWriter, r *http.Request) {
-			if r.Method == "GET" {
-				var wt runtime.WasmTask
-				log.Printf("sending task to other nodes :%v\n", r.URL)
-				nodesToSendCode := node.RoutingTable.FindClosest(kademliadfs.NewRandomId(), 8)
-				binaryName := r.PathValue("binaryName")
-				binary, exists := storedBinaries[binaryName]
-				if !exists {
-					w.WriteHeader(404)
-					return
-				}
-
-				wt = runtime.WasmTask{
-					WasmBinary:       binary,
-					WasmBinaryLength: uint64(len(binary)),
-				}
-
-				encodedWasmTask, err := wasmRuntime.Encode(wt)
-				if err != nil {
-					log.Printf("error encoding wasm task: %v", err)
-				}
-
-				for _, node := range nodesToSendCode {
-					log.Println(node)
-					log.Printf("%v:%v", node.IP, node.Port+2000)
-					wasmRuntime.SendTask(encodedWasmTask, fmt.Sprintf("%v:%v", node.IP, node.Port+2000))
-				}
-				w.WriteHeader(200)
-			}
-		})
-		log.Println("listening http on 127.0.0.1:" + strconv.Itoa((port + 1000)))
-		log.Fatal(http.ListenAndServe("127.0.0.1:"+strconv.Itoa((port+1000)), nil))
+		if err := wasmRuntime.Serve(fmt.Sprintf("0.0.0.0:%d", node.Self.Port+2000)); err != nil {
+			log.Printf("wasm runtime server error: %v", err)
+		}
 	}()
-	select {} // Block main to keep the program alive to run goroutines
+
+	server := NewServer(node, wasmRuntime, port+1000)
+	go func() {
+		if err := server.ServeHTTP(ctx); err != nil {
+			log.Printf("http server error: %v", err)
+		}
+	}()
+
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+	<-quit
+	log.Println("shutting down...")
+}
+
+type KV struct {
+	Key   string
+	Value string
+}
+
+type Server struct {
+	node           *kademliadfs.Node
+	wasmRuntime    *runtime.WasmRuntime
+	storedBinaries map[string][]byte
+	httpPort       int
+}
+
+func NewServer(node *kademliadfs.Node, wasmRuntime *runtime.WasmRuntime, httpPort int) *Server {
+	return &Server{
+		node:        node,
+		wasmRuntime: wasmRuntime,
+		storedBinaries: map[string][]byte{
+			"add":      wasmAdd,
+			"subtract": wasmSubtract,
+		},
+		httpPort: httpPort,
+	}
+}
+
+func (s *Server) handleKV(ctx context.Context) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var kv KV
+		if err := json.NewDecoder(r.Body).Decode(&kv); err != nil {
+			http.Error(w, "invalid request body", http.StatusBadRequest)
+			return
+		}
+
+		switch r.Method {
+		case http.MethodPut:
+			log.Println("handling a put request")
+			if err := s.node.Put(ctx, kv.Key, []byte(kv.Value)); err != nil {
+				log.Printf("error putting key value pair: %v\n", err)
+				http.Error(w, "failed to store value", http.StatusInternalServerError)
+				return
+			}
+			w.WriteHeader(http.StatusCreated)
+
+		case http.MethodGet:
+			log.Println("handling a get request")
+			value, err := s.node.Get(ctx, kv.Key)
+			if err != nil {
+				log.Printf("error getting key value pair: %v\n", err)
+				http.Error(w, "failed to retrieve value", http.StatusInternalServerError)
+				return
+			}
+			kv.Value = string(value)
+			w.Header().Set("Content-Type", "application/json")
+			if err := json.NewEncoder(w).Encode(kv); err != nil {
+				log.Printf("error encoding response: %v", err)
+			}
+
+		default:
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		}
+	}
+}
+
+func (s *Server) handleWasm() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		binaryName := r.PathValue("binaryName")
+		log.Printf("sending task to other nodes: %v\n", r.URL)
+
+		binary, exists := s.storedBinaries[binaryName]
+		if !exists {
+			http.Error(w, "binary not found", http.StatusNotFound)
+			return
+		}
+
+		nodesToSendCode := s.node.RoutingTable.FindClosest(kademliadfs.NewRandomId(), 8)
+
+		wt := runtime.WasmTask{
+			WasmBinary:       binary,
+			WasmBinaryLength: uint64(len(binary)),
+		}
+
+		encodedWasmTask, err := s.wasmRuntime.Encode(wt)
+		if err != nil {
+			log.Printf("error encoding wasm task: %v", err)
+			http.Error(w, "failed to encode task", http.StatusInternalServerError)
+			return
+		}
+
+		for _, contact := range nodesToSendCode {
+			log.Printf("sending to %v:%v", contact.IP, contact.Port+2000)
+			if err := s.wasmRuntime.SendTask(encodedWasmTask, fmt.Sprintf("%v:%v", contact.IP, contact.Port+2000)); err != nil {
+				log.Printf("error sending task: %v", err)
+			}
+		}
+
+		w.WriteHeader(http.StatusOK)
+	}
+}
+
+func (s *Server) ServeHTTP(ctx context.Context) error {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/kv", s.handleKV(ctx))
+	mux.HandleFunc("/wasm/{binaryName}", s.handleWasm())
+
+	addr := "127.0.0.1:" + strconv.Itoa(s.httpPort)
+	log.Println("listening http on " + addr)
+	return http.ListenAndServe(addr, mux)
+}
+
+func parseFlags() (ip net.IP, port int, bootstrapIP net.IP, bootstrapPort int, isBootstrap bool) {
+	ipPtr := flag.String("ip", "0.0.0.0", "usage: -ip=0.0.0.0")
+	portPtr := flag.Int("port", 9999, "-port=9999")
+	bootstrapNodeIpPtr := flag.String("bootstrap-ip", "0.0.0.0", "usage: -ip=0.0.0.0")
+	bootstrapNodePortPtr := flag.Int("bootstrap-port", 9000, "-bootstrap-port=9000")
+	isBootstrapNodePtr := flag.Bool("is-bootstrap", false, "is-bootstrap=false")
+	flag.Parse()
+
+	return net.ParseIP(*ipPtr), *portPtr, net.ParseIP(*bootstrapNodeIpPtr), *bootstrapNodePortPtr, *isBootstrapNodePtr
 }

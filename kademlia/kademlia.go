@@ -9,10 +9,12 @@ practical collision attacks have been demonstrated against SHA-1, meaning two di
 This makes the identifier space vulnerable to attacks and undermines the security of the DHT.
 SHA-256 is much stronger, with no known practical collision or preimage attacks, it is a safer choice for node identifiers.
 */
+
 const (
-	idLength              = 32
-	k                     = 32
-	maxConcurrentRequests = 3 // Standard concurrency parameter (alpha) for Kademlia node lookup
+	idLength                    = 32
+	k                           = 32
+	maxConcurrentRequests       = 3    // maxConcurrentRequests is standard concurrency parameter (alpha) for Kademlia node lookup
+	magicBytePrefix       uint8 = 0x04 // magicBytePrefix helps recognize kademlia packets when multiplexing on the same UDP connection. As defined in RFC9443, 4 until 15 is free for use.
 )
 
 // XorDistance ,starting from the most significant bit, returns the first encountered 1's bit index position of the xor result of a and b

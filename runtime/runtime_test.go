@@ -9,7 +9,7 @@ import (
 	"github.com/tetratelabs/wazero/imports/wasi_snapshot_preview1"
 )
 
-//go:embed main.wasm
+//go:embed binaries/add.wasm
 var wasmAdd []byte
 
 func TestWasm(t *testing.T) {

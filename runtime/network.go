@@ -14,6 +14,9 @@ type Network interface {
 
 type TCPNetwork struct{}
 
+type QUICNetwork struct{}
+
+// TODO: use a built-in method
 func ParseNetworkString(addr string) (net.IP, int, error) {
 	network := strings.Split(addr, ":")
 
@@ -46,7 +49,7 @@ func (n *TCPNetwork) Dial(addr string) (net.Conn, error) {
 	return net.DialTCP("tcp", nil, &net.TCPAddr{IP: ip, Port: int(port)})
 }
 
-//func (wt *WasmRuntime) SendQuic(data []byte, addr net.Addr) error {
+//func (n *QUICNetwork) Dial(data []byte, addr net.Addr) error {
 //	ctx := context.Background()
 //	log.Printf("yo I'm sending to %v", addr)
 //	conn, err := quic.Dial(ctx, wt.quicConn, addr, &tls.Config{
@@ -62,6 +65,10 @@ func (n *TCPNetwork) Dial(addr string) (net.Conn, error) {
 //	}
 //	str.Write(data)
 //	return nil
+//}
+//
+//func (n *QUICNetwork) Listen(addr string) (net.Listener, error) {
+//	return nil, nil
 //}
 //
 //func (wt *WasmRuntime) ListenQuic() error {
