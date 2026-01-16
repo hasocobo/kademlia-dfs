@@ -2,19 +2,27 @@ package kademliadfs
 
 import (
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
 	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"fmt"
+	"io"
 	"log"
+	"math/big"
 	"net"
 	"sync"
 	"time"
 
+	"github.com/hasocobo/kademlia-dfs/runtime"
 	"github.com/pion/stun/v3"
 	"github.com/quic-go/quic-go"
 )
 
 type QUICNetwork struct {
 	conn       *net.UDPConn
+	tr         *quic.Transport
 	pending    map[NodeId]chan rpcResponse
 	rpcHandler RpcHandler
 
@@ -32,6 +40,8 @@ func NewQUICNetwork(ip net.IP, port int) (*QUICNetwork, error) {
 		return nil, fmt.Errorf("error getting local candidates: %v", err)
 	}
 
+	tr := &quic.Transport{Conn: udpConn}
+
 	//	googleStunURI := &stun.URI{
 	//		Scheme:   stun.SchemeTypeSTUN,
 	//		Host:     "stun.l.google.com",
@@ -47,6 +57,7 @@ func NewQUICNetwork(ip net.IP, port int) (*QUICNetwork, error) {
 		pending:      make(map[NodeId]chan rpcResponse),
 		publicAddrCh: make(chan *net.UDPAddr, 1),
 		requestQueue: make(chan UDPRequest, packetBufferLimit),
+		tr:           tr,
 	}
 
 	// create n=workerPoolSize workers with timeout
@@ -61,19 +72,41 @@ func (network *QUICNetwork) SetHandler(rpcHandler RpcHandler) {
 	network.rpcHandler = rpcHandler
 }
 
+func (network *QUICNetwork) SendTask(ctx context.Context, data []byte, addr net.Addr) error {
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, 150*timeoutDuration*time.Millisecond)
+	defer cancel()
+
+	log.Printf("yo I'm sending wasm runtime task over quic channel to %v", addr)
+	conn, err := network.tr.Dial(ctx, addr, &tls.Config{
+		InsecureSkipVerify: true,
+		ServerName:         "google.com",
+		NextProtos:         []string{"drone-net"},
+	}, &quic.Config{})
+	if err != nil {
+		return fmt.Errorf("error sending quic message: %v", err)
+	}
+	str, err := conn.OpenStream()
+	if err != nil {
+		return fmt.Errorf("error opening quic stream: %v", err)
+	}
+	defer str.Close()
+	str.Write(data)
+	return nil
+}
+
 func (network *QUICNetwork) Listen(ctx context.Context) error {
 	defer network.conn.Close()
 	log.Printf("listening on quic network: %v", network.conn.LocalAddr())
-
-	tr := &quic.Transport{
-		Conn: network.conn,
-	}
 
 	// read non quic packets here
 	go func() {
 		for {
 			buf := make([]byte, MaxUDPPacketSize)
-			n, addr, err := tr.ReadNonQUICPacket(ctx, buf)
+			n, addr, err := network.tr.ReadNonQUICPacket(ctx, buf)
 			if err != nil {
 				log.Printf("error reading non quic packet: %v", err)
 				continue
@@ -83,6 +116,7 @@ func (network *QUICNetwork) Listen(ctx context.Context) error {
 
 			// TODO: move the following to a seperate goroutine
 			data := buf[:n]
+			log.Printf("first byte is: %v", data[0])
 
 			if stun.IsMessage(data) {
 				msg := &stun.Message{Raw: data}
@@ -100,7 +134,7 @@ func (network *QUICNetwork) Listen(ctx context.Context) error {
 				log.Printf("my address is: %v", xorAddr.String())
 				network.PublicAddr = &net.UDPAddr{IP: xorAddr.IP, Port: xorAddr.Port}
 				network.publicAddrCh <- network.PublicAddr
-			} else {
+			} else if data[0] == magicBytePrefix {
 
 				decodedMessage, err := Decode(data)
 				if err != nil {
@@ -125,12 +159,20 @@ func (network *QUICNetwork) Listen(ctx context.Context) error {
 	}()
 
 	// read quic packets
-	ln, err := tr.Listen(&tls.Config{InsecureSkipVerify: true, NextProtos: []string{"drone-net"}}, &quic.Config{})
+	tlsCert, certErr := generateTLSCertificate()
+	if certErr != nil {
+		return certErr
+	}
+	ln, err := network.tr.Listen(&tls.Config{
+		Certificates:       []tls.Certificate{tlsCert},
+		InsecureSkipVerify: true, ServerName: "", NextProtos: []string{"drone-net"},
+	}, &quic.Config{})
 	if err != nil {
 		return fmt.Errorf("error listening quic: %v", err)
 	}
 
 	for {
+		var data []byte
 		conn, err := ln.Accept(ctx)
 		log.Println("yo I got a quic message")
 		if err != nil {
@@ -141,12 +183,27 @@ func (network *QUICNetwork) Listen(ctx context.Context) error {
 			if err != nil {
 				return
 			}
+			defer packet.Close()
+
 			buf := make([]byte, MaxUDPPacketSize)
-			n, _ := packet.Read(buf)
+			for {
+				n, err := packet.Read(buf)
+				if n > 0 {
+					data = append(data, buf[:n]...)
+				}
+				if err != nil {
+					if err == io.EOF {
+						break
+					}
+					return
+				}
+			}
 
-			data := buf[:n]
+			wasmTask := runtime.DecodeWasmTask(data)
 
-			log.Printf("data: %v", data)
+			if wasmTask.WasmBinaryLength != 0 {
+				runtime.RunWasmTask(wasmTask.WasmBinary)
+			}
 		}()
 
 		//		for {
@@ -522,4 +579,37 @@ func (network *QUICNetwork) Store(ctx context.Context, requester Contact, recipi
 	case <-resultsChan:
 		return nil
 	}
+}
+
+func generateTLSCertificate() (tls.Certificate, error) {
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		return tls.Certificate{}, fmt.Errorf("error generating private public key pair: %v", err)
+	}
+
+	ca := x509.Certificate{
+		SerialNumber: big.NewInt(2026),
+		Subject: pkix.Name{
+			CommonName:   "hasotti",
+			Organization: []string{"Haso, INC."},
+		},
+		NotBefore:             time.Now(),
+		NotAfter:              time.Now().AddDate(0, 0, 1),
+		IsCA:                  true,
+		BasicConstraintsValid: true,
+		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageCRLSign,
+		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth, x509.ExtKeyUsageServerAuth},
+
+		IPAddresses: []net.IP{net.ParseIP("127.0.0.1")},
+	}
+
+	bytes, certErr := x509.CreateCertificate(rand.Reader, &ca, &ca, pub, priv)
+	if certErr != nil {
+		return tls.Certificate{}, fmt.Errorf("failed to create certificate: %v", err)
+	}
+
+	return tls.Certificate{
+		Certificate: [][]byte{bytes},
+		PrivateKey:  priv,
+	}, nil
 }

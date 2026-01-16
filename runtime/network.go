@@ -1,15 +1,16 @@
 package runtime
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"strconv"
 	"strings"
 )
 
-type Network interface {
-	Dial(addr string) (net.Conn, error)
-	Listen(addr string) (net.Listener, error)
+type WasmNetwork interface {
+	SendTask(ctx context.Context, data []byte, addr net.Addr) error
+	Listen(ctx context.Context) error
 }
 
 type TCPNetwork struct{}
@@ -32,41 +33,23 @@ func ParseNetworkString(addr string) (net.IP, int, error) {
 	return ip, int(port), nil
 }
 
-func (n *TCPNetwork) Listen(addr string) (net.Listener, error) {
-	ip, port, err := ParseNetworkString(addr)
-	if err != nil {
-		return nil, err
-	}
-	return net.ListenTCP("tcp", &net.TCPAddr{IP: ip, Port: int(port)})
-}
-
-func (n *TCPNetwork) Dial(addr string) (net.Conn, error) {
-	ip, port, err := ParseNetworkString(addr)
-	if err != nil {
-		return nil, err
-	}
-
-	return net.DialTCP("tcp", nil, &net.TCPAddr{IP: ip, Port: int(port)})
-}
-
-//func (n *QUICNetwork) Dial(data []byte, addr net.Addr) error {
-//	ctx := context.Background()
-//	log.Printf("yo I'm sending to %v", addr)
-//	conn, err := quic.Dial(ctx, wt.quicConn, addr, &tls.Config{
-//		InsecureSkipVerify: true,
-//		NextProtos:         []string{"drone-net"},
-//	}, &quic.Config{})
+//func (n *TCPNetwork) Listen(addr string) (net.Listener, error) {
+//	ip, port, err := ParseNetworkString(addr)
 //	if err != nil {
-//		return fmt.Errorf("error sending quic message: %v", err)
+//		return nil, err
 //	}
-//	str, err := conn.OpenStream()
-//	if err != nil {
-//		return fmt.Errorf("error opening quic stream: %v", err)
-//	}
-//	str.Write(data)
-//	return nil
+//	return net.ListenTCP("tcp", &net.TCPAddr{IP: ip, Port: int(port)})
 //}
 //
+//func (n *TCPNetwork) Dial(addr string) (net.Conn, error) {
+//	ip, port, err := ParseNetworkString(addr)
+//	if err != nil {
+//		return nil, err
+//	}
+//
+//	return net.DialTCP("tcp", nil, &net.TCPAddr{IP: ip, Port: int(port)})
+//}
+
 //func (n *QUICNetwork) Listen(addr string) (net.Listener, error) {
 //	return nil, nil
 //}

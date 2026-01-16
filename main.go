@@ -5,7 +5,6 @@ import (
 	_ "embed"
 	"encoding/json"
 	"flag"
-	"fmt"
 	"log"
 	"net"
 	"net/http"
@@ -77,19 +76,12 @@ func main() {
 		}
 	}
 
-	tcpNetwork := &runtime.TCPNetwork{}
-	wasmRuntime, err := runtime.NewWasmRuntime(tcpNetwork)
+	wasmRuntime, err := runtime.NewWasmRuntime(udpNetwork)
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	go func() {
-		if err := wasmRuntime.Serve(fmt.Sprintf("0.0.0.0:%d", node.Self.Port+2000)); err != nil {
-			log.Printf("wasm runtime server error: %v", err)
-		}
-	}()
-
-	server := NewServer(node, wasmRuntime, port+1000)
+	server := NewServer(node, wasmRuntime, udpNetwork, port+1000)
 	go func() {
 		if err := server.ServeHTTP(ctx); err != nil {
 			log.Printf("http server error: %v", err)
@@ -110,14 +102,18 @@ type KV struct {
 type Server struct {
 	node           *kademliadfs.Node
 	wasmRuntime    *runtime.WasmRuntime
+	wasmNetwork    runtime.WasmNetwork
 	storedBinaries map[string][]byte
 	httpPort       int
 }
 
-func NewServer(node *kademliadfs.Node, wasmRuntime *runtime.WasmRuntime, httpPort int) *Server {
+func NewServer(node *kademliadfs.Node, wasmRuntime *runtime.WasmRuntime,
+	wasmNetwork runtime.WasmNetwork, httpPort int,
+) *Server {
 	return &Server{
 		node:        node,
 		wasmRuntime: wasmRuntime,
+		wasmNetwork: wasmNetwork,
 		storedBinaries: map[string][]byte{
 			"add":      wasmAdd,
 			"subtract": wasmSubtract,
@@ -166,6 +162,7 @@ func (s *Server) handleKV(ctx context.Context) http.HandlerFunc {
 
 func (s *Server) handleWasm() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		ctx := context.Background()
 		if r.Method != http.MethodGet {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
@@ -187,7 +184,7 @@ func (s *Server) handleWasm() http.HandlerFunc {
 			WasmBinaryLength: uint64(len(binary)),
 		}
 
-		encodedWasmTask, err := s.wasmRuntime.Encode(wt)
+		encodedWasmTask, err := runtime.EncodeWasmTask(wt)
 		if err != nil {
 			log.Printf("error encoding wasm task: %v", err)
 			http.Error(w, "failed to encode task", http.StatusInternalServerError)
@@ -195,8 +192,9 @@ func (s *Server) handleWasm() http.HandlerFunc {
 		}
 
 		for _, contact := range nodesToSendCode {
-			log.Printf("sending to %v:%v", contact.IP, contact.Port+2000)
-			if err := s.wasmRuntime.SendTask(encodedWasmTask, fmt.Sprintf("%v:%v", contact.IP, contact.Port+2000)); err != nil {
+			log.Printf("sending to %v:%v", contact.IP, contact.Port)
+			addr := &net.UDPAddr{IP: contact.IP, Port: contact.Port}
+			if err := s.wasmNetwork.SendTask(ctx, encodedWasmTask, addr); err != nil {
 				log.Printf("error sending task: %v", err)
 			}
 		}
