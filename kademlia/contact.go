@@ -28,19 +28,23 @@ func (cs *ContactSorter) Add(c ...Contact) {
 	cs.mu.Lock()
 	defer cs.mu.Unlock()
 
+inputLoop:
 	for _, contact := range c {
-		for i := range cs.Length {
-			if contact.ID == cs.Contacts[i].ID {
-				continue
-			}
-		}
-
+		// Insert if the array is fully empty
 		if cs.Length == 0 {
 			cs.Contacts[0] = contact
 			cs.Length++
 			continue
 		}
 
+		// Prevent duplicates
+		for i := range cs.Length {
+			if contact.ID == cs.Contacts[i].ID {
+				continue inputLoop
+			}
+		}
+
+		// Insert unless the array is full
 		dist := XorDistance(contact.ID, cs.TargetID)
 		if dist >= XorDistance(cs.Contacts[cs.Length-1].ID, cs.TargetID) {
 			if cs.Length == k {
