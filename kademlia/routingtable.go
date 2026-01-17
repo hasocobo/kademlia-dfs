@@ -71,6 +71,8 @@ func (rt *RoutingTable) Update(ctx context.Context, c Contact) {
 type pingFunc func(ctx context.Context, recipient Contact) bool
 
 /*
+FindClosest returns the n closest contacts.
+
 We dump all of the contacts from each bucket into the contact sorter and
 then call its sort function to sort their distance to the targetID
 */
@@ -80,9 +82,11 @@ func (rt *RoutingTable) FindClosest(targetID NodeId, count int) []Contact {
 	for i := range rt.Buckets {
 		bucket := &rt.Buckets[i]
 
+		bucket.mu.Lock()
 		for e := bucket.Contacts.Front(); e != nil; e = e.Next() {
 			contactSorter.Add(e.Value.(Contact))
 		}
+		bucket.mu.Unlock()
 	}
 
 	if contactSorter.Length < count {

@@ -14,31 +14,31 @@ func TestIntegration_NodesJoinAndStoreKVPAirUDP(t *testing.T) {
 
 	ctx := context.Background()
 
-	bootstrapNodeNetwork, err := NewUDPNetwork(udpIp, bootstrapPort)
+	bootstrapNodeNetwork, err := NewQUICNetwork(udpIp, bootstrapPort)
 	if err != nil {
 		t.Fatalf("error creating bootstrap node: %v", err)
 	}
 	bootstrapNode := NewNode(ctx, NodeId{}, udpIp, bootstrapPort, bootstrapNodeNetwork)
 	bootstrapNodeNetwork.SetHandler(bootstrapNode)
 
-	go bootstrapNodeNetwork.Listen()
+	go bootstrapNodeNetwork.Listen(ctx)
 
 	testNodes := make([]*Node, clusterSize)
-	testNetworks := make([]*UDPNetwork, clusterSize)
+	testNetworks := make([]*QUICNetwork, clusterSize)
 	testPorts := make([]int, clusterSize)
 
 	// initialize nodes
 	for i := range clusterSize {
 		var err error
 		testPorts[i] = bootstrapPort + i + 1
-		testNetworks[i], err = NewUDPNetwork(udpIp, testPorts[i])
+		testNetworks[i], err = NewQUICNetwork(udpIp, testPorts[i])
 		if err != nil {
 			t.Fatal(err)
 		}
 		testNodes[i] = NewNode(ctx, NewRandomId(), udpIp, testPorts[i], testNetworks[i])
 		testNetworks[i].SetHandler(testNodes[i])
 
-		go testNetworks[i].Listen()
+		go testNetworks[i].Listen(ctx)
 	}
 
 	for i := range clusterSize {
