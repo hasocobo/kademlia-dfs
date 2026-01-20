@@ -17,7 +17,8 @@ type Node struct {
 	Network      Network
 	Storage      map[NodeId][]byte
 
-	mu sync.RWMutex
+	state NodeState
+	mu    sync.RWMutex
 }
 
 type LookupResult struct {
@@ -63,10 +64,6 @@ func (node *Node) HandlePing(ctx context.Context, requester Contact) bool {
 	return true
 }
 
-// This is the handler. Remote Producer Call(RPC) will call this function with its own Contact information.
-// e.g with a 3 parameter function:
-// FindNode(requester: Contact, recipientNodeToAsk: Node, targetId: NodeId) and in turn this
-// will be handled by the function below by the recipientNodeToAsk.
 func (node *Node) HandleFindNode(ctx context.Context, requester Contact, key NodeId) []Contact {
 	if ctx.Err() != nil {
 		return nil
@@ -77,7 +74,7 @@ func (node *Node) HandleFindNode(ctx context.Context, requester Contact, key Nod
 	return node.RoutingTable.FindClosest(key, k)
 }
 
-// Return the value if it exists, return closest nodes if not
+// HandleFindValue returns the value if it exists, return closest nodes if not
 func (node *Node) HandleFindValue(ctx context.Context, requester Contact, key NodeId) ([]byte, []Contact) {
 	if ctx.Err() != nil {
 		return nil, nil

@@ -3,15 +3,13 @@ package main
 import (
 	"context"
 	_ "embed"
-	"encoding/json"
 	"flag"
+	"fmt"
 	"log"
 	"net"
-	"net/http"
 	_ "net/http/pprof"
 	"os"
 	"os/signal"
-	"strconv"
 	"syscall"
 
 	kademliadfs "github.com/hasocobo/kademlia-dfs/kademlia"
@@ -24,25 +22,42 @@ var wasmAdd []byte
 //go:embed runtime/binaries/subtract.wasm
 var wasmSubtract []byte
 
-func main() {
-	ipAddress, port, bootstrapNodeIP, bootstrapNodePort, isBootstrapNode := parseFlags()
+type Config struct {
+	IP            net.IP
+	Port          int
+	BootstrapIP   net.IP
+	BootstrapPort int
+	IsBootstrap   bool
+}
 
-	udpPort := port
-	udpIP := ipAddress
+func main() {
+	cfg := parseFlags()
+	ctx := context.Background()
+
+	err := run(ctx, cfg)
+	if err == nil {
+		os.Exit(0)
+	}
+	os.Exit(1)
+}
+
+func run(ctx context.Context, cfg Config) error {
+	udpPort := cfg.Port
+	udpIP := cfg.IP
 	nodeId := kademliadfs.NewRandomId()
+	isBootstrapNode := cfg.IsBootstrap
 
 	if isBootstrapNode {
-		udpPort = bootstrapNodePort
-		udpIP = bootstrapNodeIP
+		udpPort = cfg.BootstrapPort
+		udpIP = cfg.BootstrapIP
 		nodeId = kademliadfs.NodeId{}
 	}
-
-	ctx := context.Background()
 
 	// udpNetwork, err := kademliadfs.NewUDPNetwork(udpIP, udpPort)
 	udpNetwork, err := kademliadfs.NewQUICNetwork(udpIP, udpPort)
 	if err != nil {
-		log.Fatal(err)
+		log.Print(err)
+		return fmt.Errorf("error starting new udp network: %v", err)
 	}
 
 	go udpNetwork.Listen(ctx)
@@ -56,7 +71,8 @@ func main() {
 	} else {
 		localIP, err := kademliadfs.GetOutboundIP(ctx)
 		if err != nil {
-			log.Fatalf("error getting outbound ip: %v", err)
+			log.Print(err)
+			return fmt.Errorf("error getting outbound ip: %v", err)
 		}
 		log.Println("failed determining public address, switching to local address")
 		log.Println(localIP)
@@ -67,8 +83,8 @@ func main() {
 
 	if !isBootstrapNode {
 		bootstrapContact := kademliadfs.Contact{
-			IP:   bootstrapNodeIP,
-			Port: bootstrapNodePort,
+			IP:   cfg.BootstrapIP,
+			Port: cfg.BootstrapPort,
 			ID:   kademliadfs.NodeId{},
 		}
 		if err := node.Join(ctx, bootstrapContact); err != nil {
@@ -78,10 +94,11 @@ func main() {
 
 	wasmRuntime, err := runtime.NewWasmRuntime(udpNetwork)
 	if err != nil {
-		log.Fatal(err)
+		log.Print(err)
+		return fmt.Errorf("error starting a new wasm runtime: %v", err)
 	}
 
-	server := NewServer(node, wasmRuntime, udpNetwork, port+1000)
+	server := NewServer(node, wasmRuntime, udpNetwork, udpPort+1000)
 	go func() {
 		if err := server.ServeHTTP(ctx); err != nil {
 			log.Printf("http server error: %v", err)
@@ -92,128 +109,10 @@ func main() {
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
 	log.Println("shutting down...")
+	return nil
 }
 
-type KV struct {
-	Key   string
-	Value string
-}
-
-type Server struct {
-	node           *kademliadfs.Node
-	wasmRuntime    *runtime.WasmRuntime
-	wasmNetwork    runtime.WasmNetwork
-	storedBinaries map[string][]byte
-	httpPort       int
-}
-
-func NewServer(node *kademliadfs.Node, wasmRuntime *runtime.WasmRuntime,
-	wasmNetwork runtime.WasmNetwork, httpPort int,
-) *Server {
-	return &Server{
-		node:        node,
-		wasmRuntime: wasmRuntime,
-		wasmNetwork: wasmNetwork,
-		storedBinaries: map[string][]byte{
-			"add":      wasmAdd,
-			"subtract": wasmSubtract,
-		},
-		httpPort: httpPort,
-	}
-}
-
-func (s *Server) handleKV(ctx context.Context) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		var kv KV
-		if err := json.NewDecoder(r.Body).Decode(&kv); err != nil {
-			http.Error(w, "invalid request body", http.StatusBadRequest)
-			return
-		}
-
-		switch r.Method {
-		case http.MethodPut:
-			log.Println("handling a put request")
-			if err := s.node.Put(ctx, kv.Key, []byte(kv.Value)); err != nil {
-				log.Printf("error putting key value pair: %v\n", err)
-				http.Error(w, "failed to store value", http.StatusInternalServerError)
-				return
-			}
-			w.WriteHeader(http.StatusCreated)
-
-		case http.MethodGet:
-			log.Println("handling a get request")
-			value, err := s.node.Get(ctx, kv.Key)
-			if err != nil {
-				log.Printf("error getting key value pair: %v\n", err)
-				http.Error(w, "failed to retrieve value", http.StatusInternalServerError)
-				return
-			}
-			kv.Value = string(value)
-			w.Header().Set("Content-Type", "application/json")
-			if err := json.NewEncoder(w).Encode(kv); err != nil {
-				log.Printf("error encoding response: %v", err)
-			}
-
-		default:
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		}
-	}
-}
-
-func (s *Server) handleWasm() http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		ctx := context.Background()
-		if r.Method != http.MethodGet {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-
-		binaryName := r.PathValue("binaryName")
-		log.Printf("sending task to other nodes: %v\n", r.URL)
-
-		binary, exists := s.storedBinaries[binaryName]
-		if !exists {
-			http.Error(w, "binary not found", http.StatusNotFound)
-			return
-		}
-
-		nodesToSendCode := s.node.RoutingTable.FindClosest(kademliadfs.NewRandomId(), 8)
-
-		wt := runtime.WasmTask{
-			WasmBinary:       binary,
-			WasmBinaryLength: uint64(len(binary)),
-		}
-
-		encodedWasmTask, err := runtime.EncodeWasmTask(wt)
-		if err != nil {
-			log.Printf("error encoding wasm task: %v", err)
-			http.Error(w, "failed to encode task", http.StatusInternalServerError)
-			return
-		}
-
-		for _, contact := range nodesToSendCode {
-			log.Printf("sending to %v:%v", contact.IP, contact.Port)
-			addr := &net.UDPAddr{IP: contact.IP, Port: contact.Port}
-			if err := s.wasmNetwork.SendTask(ctx, encodedWasmTask, addr); err != nil {
-				log.Printf("error sending task: %v", err)
-			}
-		}
-
-		w.WriteHeader(http.StatusOK)
-	}
-}
-
-func (s *Server) ServeHTTP(ctx context.Context) error {
-	mux := http.NewServeMux()
-	mux.HandleFunc("/kv", s.handleKV(ctx))
-	mux.HandleFunc("/wasm/{binaryName}", s.handleWasm())
-
-	addr := "127.0.0.1:" + strconv.Itoa(s.httpPort)
-	log.Println("listening http on " + addr)
-	return http.ListenAndServe(addr, mux)
-}
-
-func parseFlags() (ip net.IP, port int, bootstrapIP net.IP, bootstrapPort int, isBootstrap bool) {
+func parseFlags() Config {
 	ipPtr := flag.String("ip", "0.0.0.0", "usage: -ip=0.0.0.0")
 	portPtr := flag.Int("port", 9999, "-port=9999")
 	bootstrapNodeIpPtr := flag.String("bootstrap-ip", "0.0.0.0", "usage: -ip=0.0.0.0")
@@ -221,5 +120,5 @@ func parseFlags() (ip net.IP, port int, bootstrapIP net.IP, bootstrapPort int, i
 	isBootstrapNodePtr := flag.Bool("is-bootstrap", false, "is-bootstrap=false")
 	flag.Parse()
 
-	return net.ParseIP(*ipPtr), *portPtr, net.ParseIP(*bootstrapNodeIpPtr), *bootstrapNodePortPtr, *isBootstrapNodePtr
+	return Config{net.ParseIP(*ipPtr), *portPtr, net.ParseIP(*bootstrapNodeIpPtr), *bootstrapNodePortPtr, *isBootstrapNodePtr}
 }
