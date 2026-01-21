@@ -297,6 +297,8 @@ func (node *Node) Join(ctx context.Context, bootstrapNode Contact) error {
 
 	node.Lookup(ctx, node.Self.ID)
 
+	node.SetState(StateActive)
+
 	return nil
 }
 

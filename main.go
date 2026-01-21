@@ -32,9 +32,8 @@ type Config struct {
 
 func main() {
 	cfg := parseFlags()
-	ctx := context.Background()
 
-	err := run(ctx, cfg)
+	err := run(context.Background(), cfg)
 	if err == nil {
 		os.Exit(0)
 	}
@@ -53,6 +52,10 @@ func run(ctx context.Context, cfg Config) error {
 		nodeId = kademliadfs.NodeId{}
 	}
 
+	errChan := make(chan error, 2)
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
 	// udpNetwork, err := kademliadfs.NewUDPNetwork(udpIP, udpPort)
 	udpNetwork, err := kademliadfs.NewQUICNetwork(udpIP, udpPort)
 	if err != nil {
@@ -60,7 +63,7 @@ func run(ctx context.Context, cfg Config) error {
 		return fmt.Errorf("error starting new udp network: %v", err)
 	}
 
-	go udpNetwork.Listen(ctx)
+	go func() { errChan <- udpNetwork.Listen(ctx) }()
 	//	if err := udpNetwork.SendSTUNRequest(ctx); err != nil {
 	//		log.Print(err)
 	//	}
@@ -89,6 +92,7 @@ func run(ctx context.Context, cfg Config) error {
 		}
 		if err := node.Join(ctx, bootstrapContact); err != nil {
 			log.Printf("failed to join network: %v", err)
+			return fmt.Errorf("failed to join network: %v", err)
 		}
 	}
 
@@ -102,13 +106,23 @@ func run(ctx context.Context, cfg Config) error {
 	go func() {
 		if err := server.ServeHTTP(ctx); err != nil {
 			log.Printf("http server error: %v", err)
+			errChan <- err
 		}
 	}()
 
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
-	<-quit
-	log.Println("shutting down...")
+	defer signal.Stop(quit)
+
+	select {
+	case <-quit:
+		log.Println("signal received, shutting down...")
+		cancel()
+	case err := <-errChan:
+		log.Printf("error in listener: %v, shutting down...", err)
+		cancel()
+		return err
+	}
 	return nil
 }
 

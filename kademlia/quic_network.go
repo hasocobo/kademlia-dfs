@@ -60,11 +60,6 @@ func NewQUICNetwork(ip net.IP, port int) (*QUICNetwork, error) {
 		tr:           tr,
 	}
 
-	// create n=workerPoolSize workers with timeout
-	for range workerPoolSize {
-		go quicNetwork.requestHandlerWorker(context.Background())
-	}
-
 	return quicNetwork, nil
 }
 
@@ -89,6 +84,8 @@ func (network *QUICNetwork) SendTask(ctx context.Context, data []byte, addr net.
 	if err != nil {
 		return fmt.Errorf("error sending quic message: %v", err)
 	}
+	defer conn.CloseWithError(0, "")
+
 	str, err := conn.OpenStream()
 	if err != nil {
 		return fmt.Errorf("error opening quic stream: %v", err)
@@ -102,14 +99,23 @@ func (network *QUICNetwork) Listen(ctx context.Context) error {
 	defer network.conn.Close()
 	log.Printf("listening on quic network: %v", network.conn.LocalAddr())
 
+	// create n=workerPoolSize workers with timeout
+	for range workerPoolSize {
+		go network.requestHandlerWorker(ctx)
+	}
+
 	// read non quic packets here
 	go func() {
 		for {
 			buf := make([]byte, MaxUDPPacketSize)
 			n, addr, err := network.tr.ReadNonQUICPacket(ctx, buf)
+			if ctx.Err() != nil {
+				return
+			}
+
 			if err != nil {
 				log.Printf("error reading non quic packet: %v", err)
-				continue
+				return
 			}
 
 			log.Printf("I got a message on non quic listener")
@@ -150,7 +156,6 @@ func (network *QUICNetwork) Listen(ctx context.Context) error {
 
 				select {
 				case network.requestQueue <- UDPRequest{message: decodedMessage, address: udpAddr}:
-
 				default:
 					log.Printf("request queue is full, dropping package from %v", addr)
 				}
@@ -172,19 +177,25 @@ func (network *QUICNetwork) Listen(ctx context.Context) error {
 	}
 
 	for {
-		var data []byte
 		conn, err := ln.Accept(ctx)
-		log.Println("yo I got a quic message")
-		if err != nil {
-			return err
+		if ctx.Err() != nil {
+			return ctx.Err()
 		}
-		go func() {
+
+		if err != nil {
+			log.Println("yo I got an error")
+			continue
+		}
+		log.Println("yo I got a quic message")
+
+		go func(conn *quic.Conn) {
 			packet, err := conn.AcceptStream(ctx)
 			if err != nil {
 				return
 			}
 			defer packet.Close()
 
+			var data []byte
 			buf := make([]byte, MaxUDPPacketSize)
 			for {
 				n, err := packet.Read(buf)
@@ -204,28 +215,23 @@ func (network *QUICNetwork) Listen(ctx context.Context) error {
 			if wasmTask.WasmBinaryLength != 0 {
 				runtime.RunWasmTask(wasmTask.WasmBinary)
 			}
-		}()
-
-		//		for {
-		//
-		//			buf := make([]byte, MaxUDPPacketSize)
-		//			n, addr, err := network.conn.ReadFromUDP(buf)
-		//			if err != nil {
-		//				return fmt.Errorf("error reading from UDP: %v", err)
-		//			}
-		//			data := buf[:n]
-		///
+		}(conn)
 	}
 }
 
 func (network *QUICNetwork) requestHandlerWorker(ctx context.Context) error {
 	for {
-		request := <-network.requestQueue
-		if network.rpcHandler == nil {
-			log.Println("rpc handler is not yet set")
-			continue
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+			request := <-network.requestQueue
+			if network.rpcHandler == nil {
+				log.Println("rpc handler is not yet set")
+				continue
+			}
+			network.handleIncomingRequest(ctx, request.message, request.address)
 		}
-		network.handleIncomingRequest(ctx, request.message, request.address)
 	}
 }
 
