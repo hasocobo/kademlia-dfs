@@ -14,13 +14,14 @@ import (
 
 type Server struct {
 	node           *kademliadfs.Node
-	wasmNetwork    runtime.WasmNetwork
+	taskRuntime    runtime.TaskRuntime
+	taskNetwork    runtime.TaskNetwork
 	storedBinaries map[string][]byte
 	httpPort       int
 }
 
-func NewServer(node *kademliadfs.Node,
-	wasmNetwork runtime.WasmNetwork, httpPort int,
+func NewServer(node *kademliadfs.Node, taskRuntime runtime.TaskRuntime,
+	taskNetwork runtime.TaskNetwork, httpPort int,
 ) *Server {
 	return &Server{
 		node: node,
@@ -28,7 +29,8 @@ func NewServer(node *kademliadfs.Node,
 			"add":      wasmAdd,
 			"subtract": wasmSubtract,
 		},
-		wasmNetwork: wasmNetwork,
+		taskNetwork: taskNetwork,
+		taskRuntime: taskRuntime,
 		httpPort:    httpPort,
 	}
 }
@@ -95,12 +97,12 @@ func (s *Server) handleWasm() http.HandlerFunc {
 
 		nodesToSendCode := s.node.RoutingTable.FindClosest(kademliadfs.NewRandomId(), 8)
 
-		wt := runtime.WasmTask{
-			WasmBinary:       binary,
-			WasmBinaryLength: uint64(len(binary)),
+		task := runtime.Task{
+			Binary:       binary,
+			BinaryLength: uint64(len(binary)),
 		}
 
-		encodedWasmTask, err := runtime.EncodeWasmTask(wt)
+		encodedTask, err := s.taskRuntime.EncodeTask(task)
 		if err != nil {
 			log.Printf("error encoding wasm task: %v", err)
 			http.Error(w, "failed to encode task", http.StatusInternalServerError)
@@ -110,7 +112,7 @@ func (s *Server) handleWasm() http.HandlerFunc {
 		for _, contact := range nodesToSendCode {
 			log.Printf("sending to %v:%v", contact.IP, contact.Port)
 			addr := &net.UDPAddr{IP: contact.IP, Port: contact.Port}
-			if err := s.wasmNetwork.SendTask(ctx, encodedWasmTask, addr); err != nil {
+			if err := s.taskNetwork.SendTask(ctx, encodedTask, addr); err != nil {
 				log.Printf("error sending task: %v", err)
 			}
 		}

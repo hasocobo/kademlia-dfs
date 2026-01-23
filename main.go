@@ -13,6 +13,7 @@ import (
 	"syscall"
 
 	kademliadfs "github.com/hasocobo/kademlia-dfs/kademlia"
+	"github.com/hasocobo/kademlia-dfs/runtime"
 	"github.com/hasocobo/kademlia-dfs/scheduler"
 )
 
@@ -68,7 +69,9 @@ func run(ctx context.Context, cfg Config) error {
 	//		log.Print(err)
 	//	}
 
-	var scheduler *scheduler.Scheduler
+	taskRuntime := runtime.WasmRuntime{}
+	scheduler := scheduler.NewScheduler(taskRuntime)
+
 	var node *kademliadfs.Node
 	if quicNetwork.PublicAddr != nil {
 		node = kademliadfs.NewNode(ctx, nodeId, quicNetwork.PublicAddr.IP, quicNetwork.PublicAddr.Port, quicNetwork)
@@ -98,7 +101,7 @@ func run(ctx context.Context, cfg Config) error {
 		}
 	}
 
-	server := NewServer(node, quicNetwork, udpPort+1000)
+	server := NewServer(node, taskRuntime, quicNetwork, udpPort+1000)
 	go func() {
 		if err := server.ServeHTTP(ctx); err != nil {
 			log.Printf("http server error: %v", err)

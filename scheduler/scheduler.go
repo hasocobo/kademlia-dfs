@@ -4,12 +4,37 @@ import (
 	"context"
 	"log"
 
+	kademliadfs "github.com/hasocobo/kademlia-dfs/kademlia"
 	"github.com/hasocobo/kademlia-dfs/runtime"
 )
 
-type Scheduler struct{}
+type Scheduler struct {
+	Jobs  map[JobID]*Job
+	Tasks map[TaskID]*runtime.Task
 
-type TaskState int
+	taskRuntime runtime.TaskRuntime
+}
+
+func NewScheduler(taskRuntime runtime.TaskRuntime) *Scheduler {
+	return &Scheduler{
+		Jobs:        make(map[JobID]*Job),
+		Tasks:       make(map[TaskID]*runtime.Task),
+		taskRuntime: taskRuntime,
+	}
+}
+
+type (
+	JobID     = kademliadfs.NodeId
+	TaskID    = kademliadfs.NodeId
+	TaskState int
+)
+
+type Job struct {
+	ID        JobID
+	Name      string
+	Binary    []byte
+	InputFile []byte
+}
 
 const (
 	StatePending TaskState = iota
@@ -23,9 +48,13 @@ func (ts TaskState) String() string {
 
 func (s *Scheduler) HandleMessage(ctx context.Context, message []byte) {
 	log.Println("handling the message in task handler")
-	wasmTask := runtime.DecodeWasmTask(message)
+	task := s.taskRuntime.DecodeTask(message)
 
-	if wasmTask.WasmBinaryLength != 0 {
-		runtime.RunWasmTask(wasmTask.WasmBinary)
+	if task.BinaryLength != 0 {
+		s.taskRuntime.RunTask(ctx, task.Binary)
 	}
+}
+
+func (s *Scheduler) RegisterJob(ctx context.Context, job Job) error {
+	return nil
 }
