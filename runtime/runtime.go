@@ -5,72 +5,30 @@ import (
 	"encoding/binary"
 	"fmt"
 	"log"
+	"net"
 
 	"github.com/tetratelabs/wazero"
 	"github.com/tetratelabs/wazero/imports/wasi_snapshot_preview1"
 )
 
-type WasmRuntime struct {
-	network WasmNetwork
-}
-type WasmTask struct {
+type WasmJob struct {
+	// Name             string
 	WasmBinaryLength uint64
 	WasmBinary       []byte
 	InputFile        []byte
 }
 
-func NewWasmRuntime(n WasmNetwork) (*WasmRuntime, error) {
-	return &WasmRuntime{network: n}, nil
+type WasmTask struct {
+	WasmBinaryLength uint64
+	WasmBinary       []byte
+	InputFile        []byte
+	// TTL              time.Duration
 }
 
-//func (wr *WasmRuntime) Serve(addr string) error {
-//	ln, err := wr.network.Listen(addr)
-//	if err != nil {
-//		return fmt.Errorf("error creating listener: %v", err)
-//	}
-//	log.Printf("listening tcp on %v", addr)
-//	defer ln.Close()
-//
-//	for {
-//		conn, err := ln.Accept()
-//		if err != nil {
-//			log.Printf("error accepting packet: %v", err)
-//			continue
-//		}
-//
-//		go func(conn net.Conn) {
-//			packet, err := io.ReadAll(conn)
-//			if err != nil {
-//				log.Printf("error accepting packet: %v", err)
-//				return
-//			}
-//
-//			data := wr.Decode(packet)
-//
-//			if len(data.WasmBinary) == 0 {
-//				return
-//			}
-//
-//			wr.Run(data.WasmBinary)
-//		}(conn)
-//	}
-//}
-
-//func (wr *WasmRuntime) SendTask(data []byte, addr string) error {
-//	conn, err := wr.network.Dial(addr)
-//	if err != nil {
-//		return fmt.Errorf("error dialing %v: %v", addr, err)
-//	}
-//	log.Printf("sending task to :%v", addr)
-//	defer conn.Close()
-//
-//	_, writeErr := conn.Write(data)
-//	if writeErr != nil {
-//		return fmt.Errorf("error writing to %v: %v", addr, err)
-//	}
-//
-//	return nil
-//}
+type WasmNetwork interface {
+	SendTask(ctx context.Context, data []byte, addr net.Addr) error
+	Listen(ctx context.Context) error
+}
 
 func EncodeWasmTask(task WasmTask) ([]byte, error) {
 	encodedMessage := make([]byte, 0)

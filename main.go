@@ -13,7 +13,7 @@ import (
 	"syscall"
 
 	kademliadfs "github.com/hasocobo/kademlia-dfs/kademlia"
-	"github.com/hasocobo/kademlia-dfs/runtime"
+	"github.com/hasocobo/kademlia-dfs/scheduler"
 )
 
 //go:embed runtime/binaries/add.wasm
@@ -56,21 +56,22 @@ func run(ctx context.Context, cfg Config) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	// udpNetwork, err := kademliadfs.NewUDPNetwork(udpIP, udpPort)
-	udpNetwork, err := kademliadfs.NewQUICNetwork(udpIP, udpPort)
+	// quicNetwork, err := kademliadfs.NewUDPNetwork(udpIP, udpPort)
+	quicNetwork, err := kademliadfs.NewQUICNetwork(udpIP, udpPort)
 	if err != nil {
 		log.Print(err)
 		return fmt.Errorf("error starting new udp network: %v", err)
 	}
 
-	go func() { errChan <- udpNetwork.Listen(ctx) }()
-	//	if err := udpNetwork.SendSTUNRequest(ctx); err != nil {
+	go func() { errChan <- quicNetwork.Listen(ctx) }()
+	//	if err := quicNetwork.SendSTUNRequest(ctx); err != nil {
 	//		log.Print(err)
 	//	}
 
+	var scheduler *scheduler.Scheduler
 	var node *kademliadfs.Node
-	if udpNetwork.PublicAddr != nil {
-		node = kademliadfs.NewNode(ctx, nodeId, udpNetwork.PublicAddr.IP, udpNetwork.PublicAddr.Port, udpNetwork)
+	if quicNetwork.PublicAddr != nil {
+		node = kademliadfs.NewNode(ctx, nodeId, quicNetwork.PublicAddr.IP, quicNetwork.PublicAddr.Port, quicNetwork)
 	} else {
 		localIP, err := kademliadfs.GetOutboundIP(ctx)
 		if err != nil {
@@ -79,10 +80,11 @@ func run(ctx context.Context, cfg Config) error {
 		}
 		log.Println("failed determining public address, switching to local address")
 		log.Println(localIP)
-		node = kademliadfs.NewNode(ctx, nodeId, localIP, udpPort, udpNetwork)
+		node = kademliadfs.NewNode(ctx, nodeId, localIP, udpPort, quicNetwork)
 	}
 
-	udpNetwork.SetHandler(node)
+	quicNetwork.SetDHTHandler(node)
+	quicNetwork.SetTaskHandler(scheduler)
 
 	if !isBootstrapNode {
 		bootstrapContact := kademliadfs.Contact{
@@ -96,13 +98,7 @@ func run(ctx context.Context, cfg Config) error {
 		}
 	}
 
-	wasmRuntime, err := runtime.NewWasmRuntime(udpNetwork)
-	if err != nil {
-		log.Print(err)
-		return fmt.Errorf("error starting a new wasm runtime: %v", err)
-	}
-
-	server := NewServer(node, wasmRuntime, udpNetwork, udpPort+1000)
+	server := NewServer(node, quicNetwork, udpPort+1000)
 	go func() {
 		if err := server.ServeHTTP(ctx); err != nil {
 			log.Printf("http server error: %v", err)

@@ -19,7 +19,7 @@ func TestIntegration_NodesJoinAndStoreKVPAirUDP(t *testing.T) {
 		t.Fatalf("error creating bootstrap node: %v", err)
 	}
 	bootstrapNode := NewNode(ctx, NodeId{}, udpIp, bootstrapPort, bootstrapNodeNetwork)
-	bootstrapNodeNetwork.SetHandler(bootstrapNode)
+	bootstrapNodeNetwork.SetDHTHandler(bootstrapNode)
 
 	go bootstrapNodeNetwork.Listen(ctx)
 
@@ -36,7 +36,7 @@ func TestIntegration_NodesJoinAndStoreKVPAirUDP(t *testing.T) {
 			t.Fatal(err)
 		}
 		testNodes[i] = NewNode(ctx, NewRandomId(), udpIp, testPorts[i], testNetworks[i])
-		testNetworks[i].SetHandler(testNodes[i])
+		testNetworks[i].SetDHTHandler(testNodes[i])
 
 		go testNetworks[i].Listen(ctx)
 	}
@@ -83,7 +83,7 @@ func Benchmark_ClusterSizeNPutAndGetKVPAirUDP(b *testing.B) {
 		b.Fatalf("error creating bootstrap node: %v", err)
 	}
 	bootstrapNode := NewNode(ctx, NodeId{}, udpIp, bootstrapPort, bootstrapNodeNetwork)
-	bootstrapNodeNetwork.SetHandler(bootstrapNode)
+	bootstrapNodeNetwork.SetDHTHandler(bootstrapNode)
 
 	go bootstrapNodeNetwork.Listen()
 
@@ -100,7 +100,7 @@ func Benchmark_ClusterSizeNPutAndGetKVPAirUDP(b *testing.B) {
 			b.Fatal(err)
 		}
 		testNodes[i] = NewNode(ctx, NewRandomId(), udpIp, testPorts[i], testNetworks[i])
-		testNetworks[i].SetHandler(testNodes[i])
+		testNetworks[i].SetDHTHandler(testNodes[i])
 
 		go testNetworks[i].Listen()
 	}

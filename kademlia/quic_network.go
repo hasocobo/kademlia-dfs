@@ -15,22 +15,23 @@ import (
 	"sync"
 	"time"
 
-	"github.com/hasocobo/kademlia-dfs/runtime"
 	"github.com/pion/stun/v3"
 	"github.com/quic-go/quic-go"
 )
 
 type QUICNetwork struct {
-	conn       *net.UDPConn
-	tr         *quic.Transport
-	pending    map[NodeId]chan rpcResponse
-	rpcHandler RpcHandler
+	conn        *net.UDPConn
+	tr          *quic.Transport
+	pending     map[NodeId]chan rpcResponse
+	dhtHandler  DHTHandler
+	taskHandler TaskHandler
 
 	PublicAddr   *net.UDPAddr // sent and received via stun protocol
 	publicAddrCh chan *net.UDPAddr
 
 	requestQueue chan UDPRequest
-	mu           sync.Mutex
+
+	mu sync.Mutex
 }
 
 func NewQUICNetwork(ip net.IP, port int) (*QUICNetwork, error) {
@@ -63,8 +64,23 @@ func NewQUICNetwork(ip net.IP, port int) (*QUICNetwork, error) {
 	return quicNetwork, nil
 }
 
-func (network *QUICNetwork) SetHandler(rpcHandler RpcHandler) {
-	network.rpcHandler = rpcHandler
+type DHTHandler interface {
+	HandlePing(ctx context.Context, requester Contact) bool
+	HandleFindNode(ctx context.Context, requester Contact, key NodeId) []Contact
+	HandleFindValue(ctx context.Context, requester Contact, key NodeId) ([]byte, []Contact)
+	HandleStore(ctx context.Context, requester Contact, key NodeId, value []byte)
+}
+
+type TaskHandler interface {
+	HandleMessage(ctx context.Context, message []byte)
+}
+
+func (network *QUICNetwork) SetDHTHandler(dhtHandler DHTHandler) {
+	network.dhtHandler = dhtHandler
+}
+
+func (network *QUICNetwork) SetTaskHandler(taskHandler TaskHandler) {
+	network.taskHandler = taskHandler
 }
 
 func (network *QUICNetwork) SendTask(ctx context.Context, data []byte, addr net.Addr) error {
@@ -84,15 +100,20 @@ func (network *QUICNetwork) SendTask(ctx context.Context, data []byte, addr net.
 	if err != nil {
 		return fmt.Errorf("error sending quic message: %v", err)
 	}
-	defer conn.CloseWithError(0, "")
 
 	str, err := conn.OpenStream()
 	if err != nil {
 		return fmt.Errorf("error opening quic stream: %v", err)
 	}
 	defer str.Close()
-	str.Write(data)
+	if _, err := str.Write(data); err != nil {
+		return err
+	}
 	return nil
+}
+
+func (network *QUICNetwork) SendTaskResult(ctx context.Context) ([]byte, error) {
+	return nil, nil
 }
 
 func (network *QUICNetwork) Listen(ctx context.Context) error {
@@ -186,8 +207,6 @@ func (network *QUICNetwork) Listen(ctx context.Context) error {
 			log.Println("yo I got an error")
 			continue
 		}
-		log.Println("yo I got a quic message")
-
 		go func(conn *quic.Conn) {
 			packet, err := conn.AcceptStream(ctx)
 			if err != nil {
@@ -199,6 +218,7 @@ func (network *QUICNetwork) Listen(ctx context.Context) error {
 			buf := make([]byte, MaxUDPPacketSize)
 			for {
 				n, err := packet.Read(buf)
+
 				if n > 0 {
 					data = append(data, buf[:n]...)
 				}
@@ -206,15 +226,13 @@ func (network *QUICNetwork) Listen(ctx context.Context) error {
 					if err == io.EOF {
 						break
 					}
+					log.Printf("error reading quic packet: %v", err)
 					return
 				}
 			}
 
-			wasmTask := runtime.DecodeWasmTask(data)
-
-			if wasmTask.WasmBinaryLength != 0 {
-				runtime.RunWasmTask(wasmTask.WasmBinary)
-			}
+			log.Println("sending to task handler")
+			go network.taskHandler.HandleMessage(ctx, data)
 		}(conn)
 	}
 }
@@ -226,7 +244,7 @@ func (network *QUICNetwork) requestHandlerWorker(ctx context.Context) error {
 			return ctx.Err()
 		default:
 			request := <-network.requestQueue
-			if network.rpcHandler == nil {
+			if network.dhtHandler == nil {
 				log.Println("rpc handler is not yet set")
 				continue
 			}
@@ -242,7 +260,7 @@ func (network *QUICNetwork) handleIncomingRequest(ctx context.Context, message *
 	switch message.OpCode {
 	case Ping:
 		log.Printf("[RECV] Ping from=%s port=%d", truncateID(message.SelfNodeId), addr.Port)
-		network.rpcHandler.HandlePing(ctx, Contact{ID: message.SelfNodeId, IP: addr.IP, Port: addr.Port})
+		network.dhtHandler.HandlePing(ctx, Contact{ID: message.SelfNodeId, IP: addr.IP, Port: addr.Port})
 		pingResponse := &RpcMessage{
 			MessageID:      message.MessageID,
 			OpCode:         Pong,
@@ -267,7 +285,7 @@ func (network *QUICNetwork) handleIncomingRequest(ctx context.Context, message *
 
 	case FindNodeRequest:
 		log.Printf("[RECV] FindNodeRequest from=%s port=%d key=%s", truncateID(message.SelfNodeId), addr.Port, truncateID(message.Key))
-		contacts := network.rpcHandler.HandleFindNode(ctx, Contact{ID: message.SelfNodeId, IP: addr.IP, Port: addr.Port}, message.Key)
+		contacts := network.dhtHandler.HandleFindNode(ctx, Contact{ID: message.SelfNodeId, IP: addr.IP, Port: addr.Port}, message.Key)
 		// TODO: remove unnecessary fields like key, they don't need to be included in the response
 		findNodeResponse := &RpcMessage{
 			MessageID:      message.MessageID,
@@ -293,7 +311,7 @@ func (network *QUICNetwork) handleIncomingRequest(ctx context.Context, message *
 
 	case FindValueRequest:
 		log.Printf("[RECV] FindValueRequest from=%s port=%d key=%s valueLen=%d", truncateID(message.SelfNodeId), addr.Port, truncateID(message.Key), message.ValueLength)
-		value, contacts := network.rpcHandler.HandleFindValue(ctx, Contact{ID: message.SelfNodeId, IP: addr.IP, Port: addr.Port}, message.Key)
+		value, contacts := network.dhtHandler.HandleFindValue(ctx, Contact{ID: message.SelfNodeId, IP: addr.IP, Port: addr.Port}, message.Key)
 		findValueResponse := &RpcMessage{
 			MessageID:      message.MessageID,
 			OpCode:         FindValueResponse,
@@ -318,7 +336,7 @@ func (network *QUICNetwork) handleIncomingRequest(ctx context.Context, message *
 
 	case StoreRequest:
 		log.Printf("[RECV] StoreRequest from=%s port=%d key=%s valueLen=%d", truncateID(message.SelfNodeId), addr.Port, truncateID(message.Key), message.ValueLength)
-		network.rpcHandler.HandleStore(ctx, Contact{ID: message.SelfNodeId, IP: addr.IP, Port: addr.Port}, message.Key, message.Value)
+		network.dhtHandler.HandleStore(ctx, Contact{ID: message.SelfNodeId, IP: addr.IP, Port: addr.Port}, message.Key, message.Value)
 		storeResponse := &RpcMessage{
 			MessageID:      message.MessageID,
 			OpCode:         StoreResponse,

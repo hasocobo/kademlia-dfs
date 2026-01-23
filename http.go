@@ -14,24 +14,22 @@ import (
 
 type Server struct {
 	node           *kademliadfs.Node
-	wasmRuntime    *runtime.WasmRuntime
 	wasmNetwork    runtime.WasmNetwork
 	storedBinaries map[string][]byte
 	httpPort       int
 }
 
-func NewServer(node *kademliadfs.Node, wasmRuntime *runtime.WasmRuntime,
+func NewServer(node *kademliadfs.Node,
 	wasmNetwork runtime.WasmNetwork, httpPort int,
 ) *Server {
 	return &Server{
-		node:        node,
-		wasmRuntime: wasmRuntime,
-		wasmNetwork: wasmNetwork,
+		node: node,
 		storedBinaries: map[string][]byte{
 			"add":      wasmAdd,
 			"subtract": wasmSubtract,
 		},
-		httpPort: httpPort,
+		wasmNetwork: wasmNetwork,
+		httpPort:    httpPort,
 	}
 }
 

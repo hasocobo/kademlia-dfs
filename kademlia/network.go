@@ -29,7 +29,7 @@ type Network interface {
 type UDPNetwork struct {
 	conn       *net.UDPConn
 	pending    map[NodeId]chan rpcResponse
-	rpcHandler RpcHandler
+	dhtHandler DHTHandler
 
 	PublicAddr   *net.UDPAddr // sent and received via stun protocol
 	publicAddrCh chan *net.UDPAddr
@@ -261,13 +261,6 @@ func (network *UDPNetwork) Store(ctx context.Context, requester Contact, recipie
 	}
 }
 
-type RpcHandler interface {
-	HandlePing(ctx context.Context, requester Contact) bool
-	HandleFindNode(ctx context.Context, requester Contact, key NodeId) []Contact
-	HandleFindValue(ctx context.Context, requester Contact, key NodeId) ([]byte, []Contact)
-	HandleStore(ctx context.Context, requester Contact, key NodeId, value []byte)
-}
-
 // Fixed length Rpc Message structure for now, might migrate to protobuf/avro in the future
 type RpcMessage struct {
 	MessageID      NodeId
@@ -293,8 +286,8 @@ const (
 	StoreResponse
 )
 
-func (network *UDPNetwork) SetHandler(rpcHandler RpcHandler) {
-	network.rpcHandler = rpcHandler
+func (network *UDPNetwork) SetDHTHandler(dhtHandler DHTHandler) {
+	network.dhtHandler = dhtHandler
 }
 
 // Decode converts raw UDP packet bytes to RpcMessage struct
@@ -416,7 +409,7 @@ func Encode(message *RpcMessage) ([]byte, error) {
 func (network *UDPNetwork) requestHandlerWorker(ctx context.Context) error {
 	for {
 		request := <-network.requestQueue
-		if network.rpcHandler == nil {
+		if network.dhtHandler == nil {
 			log.Println("rpc handler is not yet set")
 			continue
 		}
@@ -431,7 +424,7 @@ func (network *UDPNetwork) handleIncomingRequest(ctx context.Context, message *R
 	switch message.OpCode {
 	case Ping:
 		log.Printf("[RECV] Ping from=%s port=%d", truncateID(message.SelfNodeId), addr.Port)
-		network.rpcHandler.HandlePing(ctx, Contact{ID: message.SelfNodeId, IP: addr.IP, Port: addr.Port})
+		network.dhtHandler.HandlePing(ctx, Contact{ID: message.SelfNodeId, IP: addr.IP, Port: addr.Port})
 		pingResponse := &RpcMessage{
 			MessageID:      message.MessageID,
 			OpCode:         Pong,
@@ -456,7 +449,7 @@ func (network *UDPNetwork) handleIncomingRequest(ctx context.Context, message *R
 
 	case FindNodeRequest:
 		log.Printf("[RECV] FindNodeRequest from=%s port=%d key=%s", truncateID(message.SelfNodeId), addr.Port, truncateID(message.Key))
-		contacts := network.rpcHandler.HandleFindNode(ctx, Contact{ID: message.SelfNodeId, IP: addr.IP, Port: addr.Port}, message.Key)
+		contacts := network.dhtHandler.HandleFindNode(ctx, Contact{ID: message.SelfNodeId, IP: addr.IP, Port: addr.Port}, message.Key)
 		// TODO: remove unnecessary fields like key, they don't need to be included in the response
 		findNodeResponse := &RpcMessage{
 			MessageID:      message.MessageID,
@@ -482,7 +475,7 @@ func (network *UDPNetwork) handleIncomingRequest(ctx context.Context, message *R
 
 	case FindValueRequest:
 		log.Printf("[RECV] FindValueRequest from=%s port=%d key=%s valueLen=%d", truncateID(message.SelfNodeId), addr.Port, truncateID(message.Key), message.ValueLength)
-		value, contacts := network.rpcHandler.HandleFindValue(ctx, Contact{ID: message.SelfNodeId, IP: addr.IP, Port: addr.Port}, message.Key)
+		value, contacts := network.dhtHandler.HandleFindValue(ctx, Contact{ID: message.SelfNodeId, IP: addr.IP, Port: addr.Port}, message.Key)
 		findValueResponse := &RpcMessage{
 			MessageID:      message.MessageID,
 			OpCode:         FindValueResponse,
@@ -507,7 +500,7 @@ func (network *UDPNetwork) handleIncomingRequest(ctx context.Context, message *R
 
 	case StoreRequest:
 		log.Printf("[RECV] StoreRequest from=%s port=%d key=%s valueLen=%d", truncateID(message.SelfNodeId), addr.Port, truncateID(message.Key), message.ValueLength)
-		network.rpcHandler.HandleStore(ctx, Contact{ID: message.SelfNodeId, IP: addr.IP, Port: addr.Port}, message.Key, message.Value)
+		network.dhtHandler.HandleStore(ctx, Contact{ID: message.SelfNodeId, IP: addr.IP, Port: addr.Port}, message.Key, message.Value)
 		storeResponse := &RpcMessage{
 			MessageID:      message.MessageID,
 			OpCode:         StoreResponse,
