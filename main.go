@@ -70,7 +70,6 @@ func run(ctx context.Context, cfg Config) error {
 	//	}
 
 	taskRuntime := runtime.WasmRuntime{}
-	scheduler := scheduler.NewScheduler(taskRuntime)
 
 	var node *kademliadfs.Node
 	if quicNetwork.PublicAddr != nil {
@@ -85,6 +84,8 @@ func run(ctx context.Context, cfg Config) error {
 		log.Println(localIP)
 		node = kademliadfs.NewNode(ctx, nodeId, localIP, udpPort, quicNetwork)
 	}
+
+	scheduler := scheduler.NewScheduler(node, taskRuntime, quicNetwork)
 
 	quicNetwork.SetDHTHandler(node)
 	quicNetwork.SetTaskHandler(scheduler)
@@ -101,13 +102,15 @@ func run(ctx context.Context, cfg Config) error {
 		}
 	}
 
-	server := NewServer(node, taskRuntime, quicNetwork, udpPort+1000)
+	server := NewServer(scheduler, udpPort+1000)
 	go func() {
 		if err := server.ServeHTTP(ctx); err != nil {
 			log.Printf("http server error: %v", err)
 			errChan <- err
 		}
 	}()
+
+	scheduler.Start(ctx)
 
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)

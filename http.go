@@ -4,34 +4,27 @@ import (
 	"context"
 	"encoding/json"
 	"log"
-	"net"
 	"net/http"
 	"strconv"
 
 	kademliadfs "github.com/hasocobo/kademlia-dfs/kademlia"
-	"github.com/hasocobo/kademlia-dfs/runtime"
+	"github.com/hasocobo/kademlia-dfs/scheduler"
 )
 
 type Server struct {
-	node           *kademliadfs.Node
-	taskRuntime    runtime.TaskRuntime
-	taskNetwork    runtime.TaskNetwork
 	storedBinaries map[string][]byte
+	scheduler      *scheduler.Scheduler
 	httpPort       int
 }
 
-func NewServer(node *kademliadfs.Node, taskRuntime runtime.TaskRuntime,
-	taskNetwork runtime.TaskNetwork, httpPort int,
-) *Server {
+func NewServer(scheduler *scheduler.Scheduler, httpPort int) *Server {
 	return &Server{
-		node: node,
 		storedBinaries: map[string][]byte{
 			"add":      wasmAdd,
 			"subtract": wasmSubtract,
 		},
-		taskNetwork: taskNetwork,
-		taskRuntime: taskRuntime,
-		httpPort:    httpPort,
+		httpPort:  httpPort,
+		scheduler: scheduler,
 	}
 }
 
@@ -51,7 +44,7 @@ func (s *Server) handleKV(ctx context.Context) http.HandlerFunc {
 		switch r.Method {
 		case http.MethodPut:
 			log.Println("handling a put request")
-			if err := s.node.Put(ctx, kv.Key, []byte(kv.Value)); err != nil {
+			if err := s.scheduler.Node.Put(ctx, kv.Key, []byte(kv.Value)); err != nil {
 				log.Printf("error putting key value pair: %v\n", err)
 				http.Error(w, "failed to store value", http.StatusInternalServerError)
 				return
@@ -60,7 +53,7 @@ func (s *Server) handleKV(ctx context.Context) http.HandlerFunc {
 
 		case http.MethodGet:
 			log.Println("handling a get request")
-			value, err := s.node.Get(ctx, kv.Key)
+			value, err := s.scheduler.Node.Get(ctx, kv.Key)
 			if err != nil {
 				log.Printf("error getting key value pair: %v\n", err)
 				http.Error(w, "failed to retrieve value", http.StatusInternalServerError)
@@ -95,28 +88,13 @@ func (s *Server) handleWasm() http.HandlerFunc {
 			return
 		}
 
-		nodesToSendCode := s.node.RoutingTable.FindClosest(kademliadfs.NewRandomId(), 8)
-
-		task := runtime.Task{
-			Binary:       binary,
-			BinaryLength: uint64(len(binary)),
+		job := scheduler.JobDescription{
+			ID:            scheduler.JobID(kademliadfs.NewRandomId()),
+			Name:          binaryName,
+			Binary:        binary,
+			NumberOfTasks: 16,
 		}
-
-		encodedTask, err := s.taskRuntime.EncodeTask(task)
-		if err != nil {
-			log.Printf("error encoding wasm task: %v", err)
-			http.Error(w, "failed to encode task", http.StatusInternalServerError)
-			return
-		}
-
-		for _, contact := range nodesToSendCode {
-			log.Printf("sending to %v:%v", contact.IP, contact.Port)
-			addr := &net.UDPAddr{IP: contact.IP, Port: contact.Port}
-			if err := s.taskNetwork.SendTask(ctx, encodedTask, addr); err != nil {
-				log.Printf("error sending task: %v", err)
-			}
-		}
-
+		s.scheduler.RegisterJob(ctx, job)
 		w.WriteHeader(http.StatusOK)
 	}
 }
