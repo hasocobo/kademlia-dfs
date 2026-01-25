@@ -284,6 +284,8 @@ const (
 	FindValueResponse
 	StoreRequest
 	StoreResponse
+	TaskExecute
+	TaskResult
 )
 
 func (network *UDPNetwork) SetDHTHandler(dhtHandler DHTHandler) {
@@ -418,6 +420,7 @@ func (network *UDPNetwork) requestHandlerWorker(ctx context.Context) error {
 }
 
 func (network *UDPNetwork) handleIncomingRequest(ctx context.Context, message *RpcMessage, addr *net.UDPAddr) {
+	// TODO: use message directly like message.OpCode = Pong and then send the result back
 	if ctx.Err() != nil {
 		return
 	}

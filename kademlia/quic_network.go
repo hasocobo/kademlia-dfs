@@ -7,6 +7,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/binary"
 	"fmt"
 	"io"
 	"log"
@@ -72,7 +73,7 @@ type DHTHandler interface {
 }
 
 type TaskHandler interface {
-	HandleMessage(ctx context.Context, message []byte)
+	HandleMessage(ctx context.Context, message []byte) ([]byte, error)
 }
 
 func (network *QUICNetwork) SetDHTHandler(dhtHandler DHTHandler) {
@@ -83,33 +84,52 @@ func (network *QUICNetwork) SetTaskHandler(taskHandler TaskHandler) {
 	network.taskHandler = taskHandler
 }
 
-func (network *QUICNetwork) SendTask(ctx context.Context, data []byte, addr net.Addr) error {
+func (network *QUICNetwork) SendTask(ctx context.Context, data []byte, addr net.Addr) ([]byte, error) {
 	if ctx.Err() != nil {
-		return ctx.Err()
+		return nil, ctx.Err()
 	}
 
 	ctx, cancel := context.WithTimeout(ctx, 150*timeoutDuration*time.Millisecond)
 	defer cancel()
 
-	log.Printf("yo I'm sending wasm runtime task over quic channel to %v", addr)
+	log.Printf("sending wasm runtime task over quic channel to %v", addr)
 	conn, err := network.tr.Dial(ctx, addr, &tls.Config{
 		InsecureSkipVerify: true,
 		ServerName:         "google.com",
 		NextProtos:         []string{"drone-net"},
 	}, &quic.Config{})
 	if err != nil {
-		return fmt.Errorf("error sending quic message: %v", err)
+		return nil, fmt.Errorf("error dialing quic: %v", err)
 	}
 
 	str, err := conn.OpenStream()
 	if err != nil {
-		return fmt.Errorf("error opening quic stream: %v", err)
+		return nil, fmt.Errorf("error opening quic stream: %v", err)
 	}
 	defer str.Close()
-	if _, err := str.Write(data); err != nil {
-		return err
+
+	lengthBytes := make([]byte, 8)
+	binary.BigEndian.PutUint64(lengthBytes, uint64(len(data)))
+	if _, err := str.Write(lengthBytes); err != nil {
+		return nil, fmt.Errorf("error writing length: %v", err)
 	}
-	return nil
+	if _, err := str.Write(data); err != nil {
+		return nil, fmt.Errorf("error writing data: %v", err)
+	}
+
+	// Read length-prefixed response
+	responseLengthBytes := make([]byte, 8)
+	if _, err := io.ReadFull(str, responseLengthBytes); err != nil {
+		return nil, fmt.Errorf("error reading response length: %v", err)
+	}
+	responseLength := binary.BigEndian.Uint64(responseLengthBytes)
+
+	response := make([]byte, responseLength)
+	if _, err := io.ReadFull(str, response); err != nil {
+		return nil, fmt.Errorf("error reading response: %v", err)
+	}
+
+	return response, nil
 }
 
 func (network *QUICNetwork) SendTaskResult(ctx context.Context) ([]byte, error) {
@@ -214,25 +234,38 @@ func (network *QUICNetwork) Listen(ctx context.Context) error {
 			}
 			defer packet.Close()
 
-			var data []byte
-			buf := make([]byte, MaxUDPPacketSize)
-			for {
-				n, err := packet.Read(buf)
+			// length-prefixed request
+			lengthBytes := make([]byte, 8)
+			if _, err := io.ReadFull(packet, lengthBytes); err != nil {
+				log.Printf("error reading request length: %v", err)
+				return
+			}
+			requestLength := binary.BigEndian.Uint64(lengthBytes)
 
-				if n > 0 {
-					data = append(data, buf[:n]...)
-				}
-				if err != nil {
-					if err == io.EOF {
-						break
-					}
-					log.Printf("error reading quic packet: %v", err)
-					return
-				}
+			request := make([]byte, requestLength)
+			if _, err := io.ReadFull(packet, request); err != nil {
+				log.Printf("error reading request: %v", err)
+				return
 			}
 
 			log.Println("sending to task handler")
-			go network.taskHandler.HandleMessage(ctx, data)
+			response, err := network.taskHandler.HandleMessage(ctx, request)
+			if err != nil {
+				log.Printf("error handling message: %v", err)
+				return
+			}
+
+			// length-prefixed response
+			responseLengthBytes := make([]byte, 8)
+			binary.BigEndian.PutUint64(responseLengthBytes, uint64(len(response)))
+			if _, err := packet.Write(responseLengthBytes); err != nil {
+				log.Printf("error writing response length: %v", err)
+				return
+			}
+			if _, err := packet.Write(response); err != nil {
+				log.Printf("error writing response: %v", err)
+				return
+			}
 		}(conn)
 	}
 }

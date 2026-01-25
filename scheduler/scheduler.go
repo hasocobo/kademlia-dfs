@@ -4,9 +4,9 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"math/rand/v2"
 	"net"
 	"sync"
+	"time"
 
 	kademliadfs "github.com/hasocobo/kademlia-dfs/kademlia"
 	"github.com/hasocobo/kademlia-dfs/runtime"
@@ -36,12 +36,19 @@ type (
 	TaskState int
 )
 
+const (
+	StatePending TaskState = iota
+	StateRunning
+	StateDone
+)
+
 type JobDescription struct {
-	ID            JobID
-	Name          string
-	Binary        []byte
-	InputFile     []byte
-	NumberOfTasks int // TODO: replace this part with a job description language like GDL
+	ID         JobID
+	Name       string
+	Binary     []byte
+	InputFile  []byte
+	TasksDone  int
+	TasksTotal int // TODO: replace this part with a job description language like GDL
 }
 
 func (job JobDescription) String() string {
@@ -54,12 +61,6 @@ type TaskDescription struct {
 	Name      string
 	TaskState TaskState
 }
-
-const (
-	StatePending TaskState = iota
-	StateRunning
-	StateDone
-)
 
 func (ts TaskState) String() string {
 	return []string{"PENDING", "RUNNING", "DONE"}[ts]
@@ -82,37 +83,81 @@ func (s *Scheduler) Start(ctx context.Context) {
 	go s.dispatchTasks(ctx)
 }
 
-func (s *Scheduler) HandleMessage(ctx context.Context, message []byte) {
+func (s *Scheduler) HandleMessage(ctx context.Context, message []byte) ([]byte, error) {
 	log.Println("handling the message in task handler")
 	task := s.taskRuntime.DecodeTask(message)
 
-	if task.BinaryLength != 0 {
-		s.taskRuntime.RunTask(ctx, task.Binary)
+	switch task.OpCode {
+	case kademliadfs.TaskExecute:
+		if len(task.Binary) != 0 {
+			response, err := s.taskRuntime.RunTask(ctx, task.Binary)
+			if err != nil {
+				log.Printf("error executing task: %v", err)
+				return nil, err
+			}
+
+			task.OpCode = kademliadfs.TaskResult
+			task.Result = response
+			return s.taskRuntime.EncodeTask(task) // TODO: add error checking
+		}
+	case kademliadfs.TaskResult:
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		taskDescription, _ := s.Tasks[task.TaskID]
+		jobDescription, _ := s.Jobs[taskDescription.JobID]
+		taskDescription.TaskState = StateDone
+		jobDescription.TasksDone++
+		log.Printf("job progress: %v/%v", jobDescription.TasksDone, jobDescription.TasksTotal)
+		log.Printf("task: %v is of state: %v", taskDescription.Name, taskDescription.TaskState)
+		if jobDescription.TasksDone == jobDescription.TasksTotal {
+			log.Printf("job: %v has completed successfully", jobDescription.Name)
+			delete(s.Jobs, jobDescription.ID)
+		}
+		return nil, nil
+
+	default:
+		return nil, fmt.Errorf("unknown message type")
 	}
+
+	return nil, fmt.Errorf("error handling the message")
 }
 
 func (s *Scheduler) RegisterJob(ctx context.Context, job JobDescription) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	_, exists := s.Jobs[job.ID]
-	if exists {
+	if _, exists := s.Jobs[job.ID]; exists {
 		return fmt.Errorf("job: %v already exists", job)
 	}
 
 	s.Jobs[job.ID] = &job
 
-	for i := range job.NumberOfTasks {
+	taskIDs := make([]TaskID, 0, job.TasksTotal)
+
+	for i := range job.TasksTotal {
 		taskId := TaskID(kademliadfs.NewRandomId())
-		newTask := &TaskDescription{
+
+		s.Tasks[taskId] = &TaskDescription{
 			ID:        taskId,
 			JobID:     job.ID,
 			Name:      fmt.Sprintf("%v-%d", job.Name, i),
 			TaskState: StatePending,
 		}
-		s.Tasks[taskId] = newTask
-		s.TaskQueue <- taskId // TODO: fix this
+
+		taskIDs = append(taskIDs, taskId)
 	}
+
+	s.mu.Unlock()
+	defer s.mu.Lock()
+
+	for _, taskId := range taskIDs {
+		select {
+		case s.TaskQueue <- taskId:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+
 	return nil
 }
 
@@ -129,22 +174,32 @@ func (s *Scheduler) dispatchTasks(ctx context.Context) {
 			binary := s.Jobs[task.JobID].Binary
 			s.mu.Unlock()
 
-			nodeToSendCode := nodesToSendCode[rand.IntN(1)]
+			nodeToSendCode := nodesToSendCode[0]
 
 			taskPayload := runtime.Task{
-				Binary:       binary,
-				BinaryLength: uint64(len(binary)),
+				OpCode: kademliadfs.TaskExecute,
+				TaskID: taskID,
+				Binary: binary,
+				TTL:    time.Second * 10,
 			}
 
 			encodedTask, err := s.taskRuntime.EncodeTask(taskPayload)
 			if err != nil {
 				log.Printf("error encoding wasm task: %v", err)
-				return
+				break
 			}
 			addr := &net.UDPAddr{IP: nodeToSendCode.IP, Port: nodeToSendCode.Port}
-			if err := s.taskNetwork.SendTask(ctx, encodedTask, addr); err != nil {
+			response, err := s.taskNetwork.SendTask(ctx, encodedTask, addr)
+			if err != nil {
 				log.Printf("error sending task: %v", err)
-				return
+				break
+			}
+
+			if len(response) > 0 {
+				if _, err := s.HandleMessage(ctx, response); err != nil {
+					log.Printf("error handling the task response: %v", err)
+					break
+				}
 			}
 
 		}

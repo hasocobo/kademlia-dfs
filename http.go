@@ -89,10 +89,10 @@ func (s *Server) handleWasm() http.HandlerFunc {
 		}
 
 		job := scheduler.JobDescription{
-			ID:            scheduler.JobID(kademliadfs.NewRandomId()),
-			Name:          binaryName,
-			Binary:        binary,
-			NumberOfTasks: 16,
+			ID:         scheduler.JobID(kademliadfs.NewRandomId()),
+			Name:       binaryName,
+			Binary:     binary,
+			TasksTotal: 300,
 		}
 		s.scheduler.RegisterJob(ctx, job)
 		w.WriteHeader(http.StatusOK)
