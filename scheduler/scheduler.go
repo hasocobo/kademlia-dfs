@@ -13,7 +13,8 @@ import (
 )
 
 const (
-	taskQueueSize = 32
+	taskQueueSize  = 32
+	taskTTLSeconds = 10
 )
 
 type Scheduler struct {
@@ -27,7 +28,7 @@ type Scheduler struct {
 	taskRuntime runtime.TaskRuntime
 	taskNetwork runtime.TaskNetwork
 
-	mu sync.Mutex
+	mu sync.RWMutex
 }
 
 type (
@@ -56,10 +57,11 @@ func (job JobDescription) String() string {
 }
 
 type TaskDescription struct {
-	ID        TaskID
-	JobID     JobID
-	Name      string
-	TaskState TaskState
+	ID         TaskID
+	JobID      JobID
+	Name       string
+	TaskState  TaskState
+	LeaseUntil time.Time
 }
 
 func (ts TaskState) String() string {
@@ -81,6 +83,7 @@ func NewScheduler(node *kademliadfs.Node, taskRuntime runtime.TaskRuntime,
 
 func (s *Scheduler) Start(ctx context.Context) {
 	go s.dispatchTasks(ctx)
+	go s.checkExpiredTasks(ctx)
 }
 
 func (s *Scheduler) HandleMessage(ctx context.Context, message []byte) ([]byte, error) {
@@ -104,14 +107,15 @@ func (s *Scheduler) HandleMessage(ctx context.Context, message []byte) ([]byte, 
 		s.mu.Lock()
 		defer s.mu.Unlock()
 		taskDescription, _ := s.Tasks[task.TaskID]
-		jobDescription, _ := s.Jobs[taskDescription.JobID]
+		jobDescription, exists := s.Jobs[taskDescription.JobID]
 		taskDescription.TaskState = StateDone
-		jobDescription.TasksDone++
+		if exists {
+			jobDescription.TasksDone++
+		}
 		log.Printf("job progress: %v/%v", jobDescription.TasksDone, jobDescription.TasksTotal)
 		log.Printf("task: %v is of state: %v", taskDescription.Name, taskDescription.TaskState)
 		if jobDescription.TasksDone == jobDescription.TasksTotal {
 			log.Printf("job: %v has completed successfully", jobDescription.Name)
-			delete(s.Jobs, jobDescription.ID)
 		}
 		return nil, nil
 
@@ -138,10 +142,11 @@ func (s *Scheduler) RegisterJob(ctx context.Context, job JobDescription) error {
 		taskId := TaskID(kademliadfs.NewRandomId())
 
 		s.Tasks[taskId] = &TaskDescription{
-			ID:        taskId,
-			JobID:     job.ID,
-			Name:      fmt.Sprintf("%v-%d", job.Name, i),
-			TaskState: StatePending,
+			ID:         taskId,
+			JobID:      job.ID,
+			Name:       fmt.Sprintf("%v-%d", job.Name, i),
+			TaskState:  StatePending,
+			LeaseUntil: time.Now().Add(time.Second * taskTTLSeconds), // TODO: get this from desc
 		}
 
 		taskIDs = append(taskIDs, taskId)
@@ -161,6 +166,35 @@ func (s *Scheduler) RegisterJob(ctx context.Context, job JobDescription) error {
 	return nil
 }
 
+func (s *Scheduler) checkExpiredTasks(ctx context.Context) {
+	t := time.NewTicker(2 * time.Second)
+
+	for {
+		select {
+		case <-t.C:
+			if len(s.Tasks) == 0 {
+				break
+			}
+
+			log.Printf("checking for expired tasks in %v tasks...", len(s.Tasks))
+
+			s.mu.Lock()
+			for id, desc := range s.Tasks {
+				if desc.LeaseUntil.Compare(time.Now()) == -1 && desc.TaskState == StateRunning {
+					log.Printf("found an expired task: %v. rescheduling for execution",
+						desc.Name)
+					desc.TaskState = StatePending
+					desc.LeaseUntil = time.Now().Add(time.Second * taskTTLSeconds)
+					s.TaskQueue <- id
+				}
+			}
+			s.mu.Unlock()
+		case <-ctx.Done():
+			return
+		}
+	}
+}
+
 func (s *Scheduler) dispatchTasks(ctx context.Context) {
 	for {
 		select {
@@ -171,36 +205,41 @@ func (s *Scheduler) dispatchTasks(ctx context.Context) {
 			s.mu.Lock()
 			task := s.Tasks[taskID]
 			task.TaskState = StateRunning
-			binary := s.Jobs[task.JobID].Binary
+			job, exists := s.Jobs[task.JobID]
+			var binary []byte
+			if exists {
+				binary = job.Binary
+			}
 			s.mu.Unlock()
-
 			nodeToSendCode := nodesToSendCode[0]
 
-			taskPayload := runtime.Task{
-				OpCode: kademliadfs.TaskExecute,
-				TaskID: taskID,
-				Binary: binary,
-				TTL:    time.Second * 10,
-			}
-
-			encodedTask, err := s.taskRuntime.EncodeTask(taskPayload)
-			if err != nil {
-				log.Printf("error encoding wasm task: %v", err)
-				break
-			}
-			addr := &net.UDPAddr{IP: nodeToSendCode.IP, Port: nodeToSendCode.Port}
-			response, err := s.taskNetwork.SendTask(ctx, encodedTask, addr)
-			if err != nil {
-				log.Printf("error sending task: %v", err)
-				break
-			}
-
-			if len(response) > 0 {
-				if _, err := s.HandleMessage(ctx, response); err != nil {
-					log.Printf("error handling the task response: %v", err)
-					break
+			go func(contact kademliadfs.Contact) {
+				taskPayload := runtime.Task{
+					OpCode: kademliadfs.TaskExecute,
+					TaskID: taskID,
+					Binary: binary,
+					TTL:    time.Second * 10, // TODO: remove
 				}
-			}
+
+				encodedTask, err := s.taskRuntime.EncodeTask(taskPayload)
+				if err != nil {
+					log.Printf("error encoding wasm task: %v", err)
+					return
+				}
+				addr := &net.UDPAddr{IP: nodeToSendCode.IP, Port: nodeToSendCode.Port}
+				response, err := s.taskNetwork.SendTask(ctx, encodedTask, addr)
+				if err != nil {
+					log.Printf("error sending task: %v", err)
+					return
+				}
+
+				if len(response) > 0 {
+					if _, err := s.HandleMessage(ctx, response); err != nil {
+						log.Printf("error handling the task response: %v", err)
+						return
+					}
+				}
+			}(nodeToSendCode)
 
 		}
 	}
