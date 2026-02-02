@@ -89,7 +89,7 @@ func (network *QUICNetwork) SendTask(ctx context.Context, data []byte, addr net.
 		return nil, ctx.Err()
 	}
 
-	ctx, cancel := context.WithTimeout(ctx, 150*timeoutDuration*time.Millisecond)
+	ctx, cancel := context.WithTimeout(ctx, timeoutDuration*time.Millisecond)
 	defer cancel()
 
 	log.Printf("sending wasm runtime task over quic channel to %v", addr)
@@ -101,6 +101,18 @@ func (network *QUICNetwork) SendTask(ctx context.Context, data []byte, addr net.
 	if err != nil {
 		return nil, fmt.Errorf("error dialing quic: %v", err)
 	}
+	defer conn.CloseWithError(0, "done")
+
+	done := make(chan struct{})
+	go func() {
+		select {
+		case <-ctx.Done():
+			conn.CloseWithError(0, ctx.Err().Error())
+		case <-done:
+		}
+	}()
+
+	defer close(done)
 
 	str, err := conn.OpenStream()
 	if err != nil {
@@ -591,6 +603,7 @@ func (network *QUICNetwork) Ping(ctx context.Context, requester Contact, recipie
 		return nil
 	case <-ctx.Done():
 		log.Printf("[TIMEOUT] Ping to=%s port=%d", truncateID(recipient.ID), recipient.Port)
+
 		return fmt.Errorf("timeout waiting for Pong")
 	}
 }

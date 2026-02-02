@@ -68,6 +68,27 @@ func (rt *RoutingTable) Update(ctx context.Context, c Contact) {
 	bucket.Contacts.PushFront(c)
 }
 
+func (rt *RoutingTable) Remove(c Contact) {
+	idx := rt.GetBucketIndex(rt.SelfID, c.ID)
+
+	// index is -1 if the contact is itself
+	if idx == -1 {
+		return
+	}
+
+	bucket := &rt.Buckets[idx]
+
+	bucket.mu.Lock()
+	defer bucket.mu.Unlock()
+
+	for e := bucket.Contacts.Front(); e != nil; e = e.Next() {
+		if e.Value.(Contact).ID == c.ID {
+			bucket.Contacts.Remove(e)
+			return
+		}
+	}
+}
+
 type pingFunc func(ctx context.Context, recipient Contact) bool
 
 /*

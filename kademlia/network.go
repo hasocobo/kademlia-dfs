@@ -16,7 +16,7 @@ const (
 	MaxUDPPacketSize  = 65535
 	packetBufferLimit = 1024 // how many packets can wait in buffer
 	workerPoolSize    = 32
-	timeoutDuration   = 500 // in ms
+	timeoutDuration   = 2500 // in ms
 )
 
 type Network interface {

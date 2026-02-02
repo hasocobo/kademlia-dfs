@@ -73,7 +73,6 @@ func (s *Server) handleKV(ctx context.Context) http.HandlerFunc {
 
 func (s *Server) handleWasm() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		ctx := context.Background()
 		if r.Method != http.MethodGet {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
@@ -94,7 +93,7 @@ func (s *Server) handleWasm() http.HandlerFunc {
 			Binary:     binary,
 			TasksTotal: 300,
 		}
-		s.scheduler.RegisterJob(ctx, job)
+		s.scheduler.RegisterJob(job)
 		w.WriteHeader(http.StatusOK)
 	}
 }

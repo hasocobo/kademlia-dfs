@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"log"
 	"net"
-	"sync"
 	"time"
 
 	kademliadfs "github.com/hasocobo/kademlia-dfs/kademlia"
@@ -13,22 +12,24 @@ import (
 )
 
 const (
-	taskQueueSize  = 32
-	taskTTLSeconds = 10
+	taskQueueSize       = 1024
+	taskTTLSeconds      = 10
+	tickIntervalSeconds = 2
+	eventLoopBufferSize = 512
 )
 
 type Scheduler struct {
 	Jobs  map[JobID]*JobDescription
 	Tasks map[TaskID]*TaskDescription
 
-	TaskQueue chan TaskID
+	events chan Event
+
+	readyTaskQueue chan TaskID
 
 	Node *kademliadfs.Node
 
 	taskRuntime runtime.TaskRuntime
 	taskNetwork runtime.TaskNetwork
-
-	mu sync.RWMutex
 }
 
 type (
@@ -43,51 +44,142 @@ const (
 	StateDone
 )
 
-type JobDescription struct {
-	ID         JobID
-	Name       string
-	Binary     []byte
-	InputFile  []byte
-	TasksDone  int
-	TasksTotal int // TODO: replace this part with a job description language like GDL
-}
-
-func (job JobDescription) String() string {
-	return fmt.Sprintf("ID: %v Name:%v", job.ID.String(), job.Name)
-}
-
-type TaskDescription struct {
-	ID         TaskID
-	JobID      JobID
-	Name       string
-	TaskState  TaskState
-	LeaseUntil time.Time
-}
-
-func (ts TaskState) String() string {
-	return []string{"PENDING", "RUNNING", "DONE"}[ts]
-}
-
 func NewScheduler(node *kademliadfs.Node, taskRuntime runtime.TaskRuntime,
 	taskNetwork runtime.TaskNetwork,
 ) *Scheduler {
 	return &Scheduler{
-		Jobs:        make(map[JobID]*JobDescription),
-		Tasks:       make(map[TaskID]*TaskDescription),
-		TaskQueue:   make(chan TaskID, taskQueueSize),
-		Node:        node,
-		taskNetwork: taskNetwork,
-		taskRuntime: taskRuntime,
+		Jobs:           make(map[JobID]*JobDescription),
+		Tasks:          make(map[TaskID]*TaskDescription),
+		events:         make(chan Event, eventLoopBufferSize),
+		readyTaskQueue: make(chan TaskID, taskQueueSize),
+		Node:           node,
+		taskNetwork:    taskNetwork,
+		taskRuntime:    taskRuntime,
 	}
 }
 
 func (s *Scheduler) Start(ctx context.Context) {
-	go s.dispatchTasks(ctx)
-	go s.checkExpiredTasks(ctx)
+	go func() {
+		t := time.NewTicker(tickIntervalSeconds * time.Second)
+		defer t.Stop()
+
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				s.events <- EventTick{}
+			}
+		}
+	}()
+
+	go s.runLoop(ctx)
+}
+
+func (s *Scheduler) runLoop(ctx context.Context) {
+	log.Println("loop is running")
+	for {
+		select {
+		case event := <-s.events:
+			log.Printf("I got an event of type: %T", event)
+			s.handleEvent(ctx, event)
+			s.maybeDispatchTasks(ctx)
+		case <-ctx.Done():
+			return
+		}
+	}
+}
+
+func (s *Scheduler) handleEvent(ctx context.Context, event Event) error {
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+
+	switch e := event.(type) {
+	case EventTick:
+		if len(s.Tasks) == 0 {
+			break
+		}
+
+		log.Printf("checking for expired tasks in %v tasks...", len(s.Tasks))
+
+		for taskID, task := range s.Tasks {
+			if task.LeaseUntil.Compare(time.Now()) == 1 || task.TaskState != StatePending {
+				continue
+			}
+			err := s.enqueueTask(taskID)
+			if err != nil {
+				log.Println(err.Error())
+				break
+			}
+		}
+
+	case EventJobSubmitted:
+		job := e.job
+		log.Printf("job received: %v", job)
+		if _, exists := s.Jobs[job.ID]; exists {
+			return fmt.Errorf("job: %v already exists", job)
+		}
+
+		s.Jobs[job.ID] = &job
+
+		taskIDs := make([]TaskID, 0, job.TasksTotal)
+
+		for i := range job.TasksTotal {
+			taskID := TaskID(kademliadfs.NewRandomId())
+
+			s.Tasks[taskID] = &TaskDescription{
+				ID:        taskID,
+				JobID:     job.ID,
+				Name:      fmt.Sprintf("%v-%d", job.Name, i),
+				TaskState: StatePending,
+			}
+
+			taskIDs = append(taskIDs, taskID)
+		}
+
+		for _, taskID := range taskIDs {
+			if ctx.Err() != nil {
+				break
+			}
+			if err := s.enqueueTask(taskID); err != nil {
+				log.Printf("error enqueueing task: %v", err.Error())
+				break
+			}
+		}
+		return nil
+
+		//	case EventTaskDispatched:
+		//		taskID := e.taskID
+	case EventJobDone:
+		jobID := e.jobID
+		job, exists := s.Jobs[jobID]
+		if !exists {
+			log.Printf("job: %v was not found in the job list", job)
+		}
+		log.Printf("job: %v has completed successfully", job.Name)
+
+	case EventTaskDispatchFailed:
+		log.Printf("error sending task: %v, checking for node health via ping...", e.err)
+
+		s.markTaskDispatchFailed(e.taskID)
+
+		// for now, I just remove node but in the future we might first mark it as suspect and then ping it
+		log.Printf("node: %v is dead, removing from the network", e.contact.ID)
+		s.Node.RoutingTable.Remove(e.contact)
+
+	case EventTaskDone:
+		err := s.markTaskDone(e.taskID)
+		if err != nil {
+			return err
+		}
+		return nil
+	}
+
+	return nil
 }
 
 func (s *Scheduler) HandleMessage(ctx context.Context, message []byte) ([]byte, error) {
-	log.Println("handling the message in task handler")
 	task := s.taskRuntime.DecodeTask(message)
 
 	switch task.OpCode {
@@ -104,19 +196,7 @@ func (s *Scheduler) HandleMessage(ctx context.Context, message []byte) ([]byte, 
 			return s.taskRuntime.EncodeTask(task) // TODO: add error checking
 		}
 	case kademliadfs.TaskResult:
-		s.mu.Lock()
-		defer s.mu.Unlock()
-		taskDescription, _ := s.Tasks[task.TaskID]
-		jobDescription, exists := s.Jobs[taskDescription.JobID]
-		taskDescription.TaskState = StateDone
-		if exists {
-			jobDescription.TasksDone++
-		}
-		log.Printf("job progress: %v/%v", jobDescription.TasksDone, jobDescription.TasksTotal)
-		log.Printf("task: %v is of state: %v", taskDescription.Name, taskDescription.TaskState)
-		if jobDescription.TasksDone == jobDescription.TasksTotal {
-			log.Printf("job: %v has completed successfully", jobDescription.Name)
-		}
+		s.events <- EventTaskDone{taskID: task.TaskID}
 		return nil, nil
 
 	default:
@@ -126,91 +206,35 @@ func (s *Scheduler) HandleMessage(ctx context.Context, message []byte) ([]byte, 
 	return nil, fmt.Errorf("error handling the message")
 }
 
-func (s *Scheduler) RegisterJob(ctx context.Context, job JobDescription) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if _, exists := s.Jobs[job.ID]; exists {
-		return fmt.Errorf("job: %v already exists", job)
-	}
-
-	s.Jobs[job.ID] = &job
-
-	taskIDs := make([]TaskID, 0, job.TasksTotal)
-
-	for i := range job.TasksTotal {
-		taskId := TaskID(kademliadfs.NewRandomId())
-
-		s.Tasks[taskId] = &TaskDescription{
-			ID:         taskId,
-			JobID:      job.ID,
-			Name:       fmt.Sprintf("%v-%d", job.Name, i),
-			TaskState:  StatePending,
-			LeaseUntil: time.Now().Add(time.Second * taskTTLSeconds), // TODO: get this from desc
-		}
-
-		taskIDs = append(taskIDs, taskId)
-	}
-
-	s.mu.Unlock()
-	defer s.mu.Lock()
-
-	for _, taskId := range taskIDs {
-		select {
-		case s.TaskQueue <- taskId:
-		case <-ctx.Done():
-			return ctx.Err()
-		}
-	}
-
-	return nil
+func (s *Scheduler) RegisterJob(job JobDescription) {
+	s.events <- EventJobSubmitted{job: job}
 }
 
-func (s *Scheduler) checkExpiredTasks(ctx context.Context) {
-	t := time.NewTicker(2 * time.Second)
-
-	for {
-		select {
-		case <-t.C:
-			if len(s.Tasks) == 0 {
-				break
-			}
-
-			log.Printf("checking for expired tasks in %v tasks...", len(s.Tasks))
-
-			s.mu.Lock()
-			for id, desc := range s.Tasks {
-				if desc.LeaseUntil.Compare(time.Now()) == -1 && desc.TaskState == StateRunning {
-					log.Printf("found an expired task: %v. rescheduling for execution",
-						desc.Name)
-					desc.TaskState = StatePending
-					desc.LeaseUntil = time.Now().Add(time.Second * taskTTLSeconds)
-					s.TaskQueue <- id
-				}
-			}
-			s.mu.Unlock()
-		case <-ctx.Done():
-			return
-		}
-	}
-}
-
-func (s *Scheduler) dispatchTasks(ctx context.Context) {
-	for {
+func (s *Scheduler) maybeDispatchTasks(ctx context.Context) {
+	burstSize := 32 // will drain tasks as bursts to avoid spamming the workers with tasks
+	for range burstSize {
 		select {
 		case <-ctx.Done():
 			return
-		case taskID := <-s.TaskQueue:
+		case taskID := <-s.readyTaskQueue:
 			nodesToSendCode := s.Node.RoutingTable.FindClosest(kademliadfs.NewRandomId(), 1)
-			s.mu.Lock()
-			task := s.Tasks[taskID]
-			task.TaskState = StateRunning
+
+			err := s.markTaskDispatched(taskID)
+			if err != nil {
+				log.Println(err.Error())
+				return
+			}
+
+			task := s.mustTask(taskID)
 			job, exists := s.Jobs[task.JobID]
 			var binary []byte
 			if exists {
 				binary = job.Binary
 			}
-			s.mu.Unlock()
+			if len(nodesToSendCode) == 0 {
+				log.Println("no nodes found to send the tasks")
+				return
+			}
 			nodeToSendCode := nodesToSendCode[0]
 
 			go func(contact kademliadfs.Contact) {
@@ -229,7 +253,11 @@ func (s *Scheduler) dispatchTasks(ctx context.Context) {
 				addr := &net.UDPAddr{IP: nodeToSendCode.IP, Port: nodeToSendCode.Port}
 				response, err := s.taskNetwork.SendTask(ctx, encodedTask, addr)
 				if err != nil {
-					log.Printf("error sending task: %v", err)
+					s.events <- EventTaskDispatchFailed{
+						taskID:  taskID,
+						contact: nodeToSendCode,
+						err:     err,
+					}
 					return
 				}
 
@@ -241,6 +269,8 @@ func (s *Scheduler) dispatchTasks(ctx context.Context) {
 				}
 			}(nodeToSendCode)
 
+		default:
+			return
 		}
 	}
 }

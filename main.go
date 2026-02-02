@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	_ "embed"
 	"flag"
 	"fmt"
@@ -44,13 +45,13 @@ func main() {
 func run(ctx context.Context, cfg Config) error {
 	udpPort := cfg.Port
 	udpIP := cfg.IP
-	nodeId := kademliadfs.NewRandomId()
+	nodeID := kademliadfs.NewRandomId()
 	isBootstrapNode := cfg.IsBootstrap
 
 	if isBootstrapNode {
 		udpPort = cfg.BootstrapPort
 		udpIP = cfg.BootstrapIP
-		nodeId = kademliadfs.NodeId{}
+		nodeID = kademliadfs.NodeId{}
 	}
 
 	errChan := make(chan error, 2)
@@ -73,7 +74,7 @@ func run(ctx context.Context, cfg Config) error {
 
 	var node *kademliadfs.Node
 	if quicNetwork.PublicAddr != nil {
-		node = kademliadfs.NewNode(ctx, nodeId, quicNetwork.PublicAddr.IP, quicNetwork.PublicAddr.Port, quicNetwork)
+		node = kademliadfs.NewNode(ctx, nodeID, quicNetwork.PublicAddr.IP, quicNetwork.PublicAddr.Port, quicNetwork)
 	} else {
 		localIP, err := kademliadfs.GetOutboundIP(ctx)
 		if err != nil {
@@ -82,7 +83,13 @@ func run(ctx context.Context, cfg Config) error {
 		}
 		log.Println("failed determining public address, switching to local address")
 		log.Println(localIP)
-		node = kademliadfs.NewNode(ctx, nodeId, localIP, udpPort, quicNetwork)
+
+		// makes node id the same for same ip + port always. temporary for testing restarts.
+		sum := sha256.Sum256([]byte(fmt.Sprintf("%s:%d", localIP.String(), udpPort)))
+
+		nodeID = kademliadfs.NodeId(sum)
+
+		node = kademliadfs.NewNode(ctx, nodeID, localIP, udpPort, quicNetwork)
 	}
 
 	scheduler := scheduler.NewScheduler(node, taskRuntime, quicNetwork)
