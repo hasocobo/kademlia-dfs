@@ -23,19 +23,6 @@ func (ts TaskState) String() string {
 	return []string{"PENDING", "RUNNING", "DONE"}[ts]
 }
 
-type JobDescription struct {
-	ID         JobID
-	Name       string
-	Binary     []byte
-	InputFile  []byte
-	TasksDone  int
-	TasksTotal int // TODO: replace this part with a job description language like GDL
-}
-
-func (job JobDescription) String() string {
-	return fmt.Sprintf("ID: %v Name:%v", job.ID.String(), job.Name)
-}
-
 func (s *Scheduler) markTaskDispatched(taskID TaskID) error {
 	task := s.mustTask(taskID)
 

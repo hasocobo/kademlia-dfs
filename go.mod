@@ -9,6 +9,7 @@ require (
 )
 
 require (
+	github.com/goccy/go-yaml v1.19.2 // indirect
 	github.com/pion/dtls/v3 v3.0.9 // indirect
 	github.com/pion/logging v0.2.4 // indirect
 	github.com/pion/transport/v3 v3.1.1 // indirect

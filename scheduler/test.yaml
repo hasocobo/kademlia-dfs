@@ -1,0 +1,9 @@
+name: count-words
+
+tasks:
+  split:
+    run: "plan.wasm"
+  execute:
+    run: "map.wasm"
+  merge:
+    run: "reduce.wasm"

@@ -92,6 +92,7 @@ func run(ctx context.Context, cfg Config) error {
 		node = kademliadfs.NewNode(ctx, nodeID, localIP, udpPort, quicNetwork)
 	}
 
+	parser := scheduler.YAMLParser{}
 	scheduler := scheduler.NewScheduler(node, taskRuntime, quicNetwork)
 
 	quicNetwork.SetDHTHandler(node)
@@ -109,7 +110,7 @@ func run(ctx context.Context, cfg Config) error {
 		}
 	}
 
-	server := NewServer(scheduler, udpPort+1000)
+	server := NewServer(scheduler, udpPort+1000, parser)
 	go func() {
 		if err := server.ServeHTTP(ctx); err != nil {
 			log.Printf("http server error: %v", err)

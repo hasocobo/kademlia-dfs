@@ -15,9 +15,10 @@ type Server struct {
 	storedBinaries map[string][]byte
 	scheduler      *scheduler.Scheduler
 	httpPort       int
+	jobParser      scheduler.JobParser
 }
 
-func NewServer(scheduler *scheduler.Scheduler, httpPort int) *Server {
+func NewServer(scheduler *scheduler.Scheduler, httpPort int, jobParser scheduler.JobParser) *Server {
 	return &Server{
 		storedBinaries: map[string][]byte{
 			"add":      wasmAdd,
@@ -25,6 +26,7 @@ func NewServer(scheduler *scheduler.Scheduler, httpPort int) *Server {
 		},
 		httpPort:  httpPort,
 		scheduler: scheduler,
+		jobParser: jobParser,
 	}
 }
 
@@ -71,6 +73,21 @@ func (s *Server) handleKV(ctx context.Context) http.HandlerFunc {
 	}
 }
 
+func (s *Server) handleJob() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodPost:
+			var jobSpec scheduler.JobSpec
+
+			s.jobParser.Parse(r.Body, &jobSpec)
+
+			log.Println(jobSpec.ToString())
+
+			w.WriteHeader(http.StatusOK)
+		}
+	}
+}
+
 func (s *Server) handleWasm() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
@@ -102,6 +119,7 @@ func (s *Server) ServeHTTP(ctx context.Context) error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/kv", s.handleKV(ctx))
 	mux.HandleFunc("/wasm/{binaryName}", s.handleWasm())
+	mux.HandleFunc("/jobs", s.handleJob())
 
 	addr := "127.0.0.1:" + strconv.Itoa(s.httpPort)
 	log.Println("listening http on " + addr)
