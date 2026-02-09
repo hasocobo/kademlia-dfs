@@ -18,10 +18,10 @@ import (
 	"github.com/hasocobo/kademlia-dfs/scheduler"
 )
 
-//go:embed runtime/binaries/add.wasm
+//go:embed .binaries/add.wasm
 var wasmAdd []byte
 
-//go:embed runtime/binaries/subtract.wasm
+//go:embed .binaries/subtract.wasm
 var wasmSubtract []byte
 
 type Config struct {

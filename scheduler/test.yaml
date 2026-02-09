@@ -2,8 +2,9 @@ name: count-words
 
 tasks:
   split:
-    run: "plan.wasm"
+    input: "../.binaries/example.txt"
+    run: "../.binaries/plan.wasm"
   execute:
-    run: "map.wasm"
+    run: "../.binaries/map.wasm"
   merge:
-    run: "reduce.wasm"
+    run: "../.binaries/reduce.wasm"

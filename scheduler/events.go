@@ -5,15 +5,21 @@ import kademliadfs "github.com/hasocobo/kademlia-dfs/kademlia"
 type Event interface{ isEvent() }
 
 type (
-	EventTick               struct{}
-	EventJobSubmitted       struct{ job JobDescription }
+	EventTick         struct{}
+	EventJobSubmitted struct {
+		job   JobDescription
+		tasks []*TaskDescription
+	}
 	EventTaskDispatchFailed struct {
 		taskID  TaskID
 		contact kademliadfs.Contact
 		err     error
 	}
-	EventTaskDone struct{ taskID TaskID }
-	EventJobDone  struct{ jobID JobID }
+	EventTaskDone struct {
+		taskID TaskID
+		result []byte
+	}
+	EventJobDone struct{ jobID JobID }
 	//	EventTaskDispatched struct{ taskID TaskID } no need for now
 )
 

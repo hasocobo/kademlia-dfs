@@ -1,10 +1,14 @@
 package scheduler
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"log"
 	"net"
+	"os"
 	"time"
 
 	kademliadfs "github.com/hasocobo/kademlia-dfs/kademlia"
@@ -116,41 +120,25 @@ func (s *Scheduler) handleEvent(ctx context.Context, event Event) error {
 
 	case EventJobSubmitted:
 		job := e.job
-		log.Printf("job received: %v", job)
+		log.Printf("job received: %v", job.Name)
 		if _, exists := s.Jobs[job.ID]; exists {
 			return fmt.Errorf("job: %v already exists", job)
 		}
 
 		s.Jobs[job.ID] = &job
 
-		taskIDs := make([]TaskID, 0, job.TasksTotal)
-
-		for i := range job.TasksTotal {
-			taskID := TaskID(kademliadfs.NewRandomId())
-
-			s.Tasks[taskID] = &TaskDescription{
-				ID:        taskID,
-				JobID:     job.ID,
-				Name:      fmt.Sprintf("%v-%d", job.Name, i),
-				TaskState: StatePending,
-			}
-
-			taskIDs = append(taskIDs, taskID)
-		}
-
-		for _, taskID := range taskIDs {
+		for _, task := range e.tasks {
 			if ctx.Err() != nil {
 				break
 			}
-			if err := s.enqueueTask(taskID); err != nil {
+			s.Tasks[task.ID] = task
+			if err := s.enqueueTask(task.ID); err != nil {
 				log.Printf("error enqueueing task: %v", err.Error())
 				break
 			}
 		}
 		return nil
 
-		//	case EventTaskDispatched:
-		//		taskID := e.taskID
 	case EventJobDone:
 		jobID := e.jobID
 		job, exists := s.Jobs[jobID]
@@ -169,7 +157,7 @@ func (s *Scheduler) handleEvent(ctx context.Context, event Event) error {
 		s.Node.RoutingTable.Remove(e.contact)
 
 	case EventTaskDone:
-		err := s.markTaskDone(e.taskID)
+		err := s.markTaskDone(e.taskID, e.result) // NOTE: use task instead of taskID
 		if err != nil {
 			return err
 		}
@@ -185,7 +173,7 @@ func (s *Scheduler) HandleMessage(ctx context.Context, message []byte) ([]byte, 
 	switch task.OpCode {
 	case kademliadfs.TaskExecute:
 		if len(task.Binary) != 0 {
-			response, err := s.taskRuntime.RunTask(ctx, task.Binary)
+			response, err := s.taskRuntime.RunTask(ctx, task.Binary, task.Stdin)
 			if err != nil {
 				log.Printf("error executing task: %v", err)
 				return nil, err
@@ -196,7 +184,7 @@ func (s *Scheduler) HandleMessage(ctx context.Context, message []byte) ([]byte, 
 			return s.taskRuntime.EncodeTask(task) // TODO: add error checking
 		}
 	case kademliadfs.TaskResult:
-		s.events <- EventTaskDone{taskID: task.TaskID}
+		s.events <- EventTaskDone{taskID: task.TaskID, result: task.Result}
 		return nil, nil
 
 	default:
@@ -206,8 +194,147 @@ func (s *Scheduler) HandleMessage(ctx context.Context, message []byte) ([]byte, 
 	return nil, fmt.Errorf("error handling the message")
 }
 
-func (s *Scheduler) RegisterJob(job JobDescription) {
-	s.events <- EventJobSubmitted{job: job}
+func (s *Scheduler) RegisterJob(job JobSpec) error {
+	jobID := kademliadfs.NewRandomId()
+	var executionPlan ExecutionPlan
+	dirPath := fmt.Sprintf("../.jobs/%v", jobID)
+
+	for name, taskSpec := range job.Tasks {
+		switch name {
+		case "split":
+			if err := os.MkdirAll(dirPath, 0o755); err != nil {
+				log.Printf("error creating job dir: %v", err)
+				return err
+			}
+
+			inputFile, err := os.ReadFile(taskSpec.Input)
+			if err != nil {
+				log.Printf("error reading file: %v", err)
+				return err
+			}
+
+			binary, err := os.ReadFile(taskSpec.Run)
+			if err != nil {
+				log.Printf("error reading binary: %v", err)
+				return err
+			}
+
+			plan, err := s.taskRuntime.RunTask(context.TODO(), binary, inputFile)
+			if err != nil {
+				log.Printf("error running planner wasm: %v", err)
+				return err
+			}
+			log.Println("successfully created the plan")
+
+			writeErr := os.WriteFile(dirPath+"/plan.json", plan, 0o644)
+			if writeErr != nil {
+				log.Printf("error writing plan: %v", writeErr)
+				return writeErr
+			}
+			log.Println("successfully wrote the plan")
+
+		case "execute":
+			planBytes, err := os.ReadFile(dirPath + "/plan.json")
+			if err != nil {
+				log.Printf("error reading plan: %v", err)
+				return err
+			}
+
+			err = json.Unmarshal(planBytes, &executionPlan)
+			if err != nil {
+				log.Printf("error unmarshaling plan: %v", err)
+				return err
+			}
+
+			if executionPlan.Total != len(executionPlan.Tasks) {
+				return fmt.Errorf("plan total mismatch: total=%d tasks=%d", executionPlan.Total, len(executionPlan.Tasks))
+			} // TODO: think about this
+
+			binary, err := os.ReadFile(taskSpec.Run)
+			if err != nil {
+				log.Printf("error reading binary: %v", err)
+				return err
+			}
+
+			job := JobDescription{
+				ID:         jobID,
+				Name:       executionPlan.Name,
+				Binary:     binary,
+				TasksTotal: executionPlan.Total,
+			}
+			tasks := make([]*TaskDescription, len(executionPlan.Tasks))
+
+			for i, t := range executionPlan.Tasks {
+				log.Println(t)
+				stdinBytes, err := base64.StdEncoding.DecodeString(t.Stdin)
+				if err != nil {
+					return fmt.Errorf("task %v stdin base64 decode failed: %v", t.ID, err)
+				}
+
+				tasks[i] = &TaskDescription{
+					ID:    kademliadfs.NewRandomId(),
+					JobID: jobID,
+					Name:  fmt.Sprintf("%v-%v", executionPlan.Name, t.ID),
+
+					Stdin:   stdinBytes,
+					ChunkID: t.ID,
+				}
+			}
+
+			s.events <- EventJobSubmitted{job: job, tasks: tasks}
+
+		case "merge":
+			time.Sleep(1 * time.Second)
+			binary, err := os.ReadFile(taskSpec.Run)
+			if err != nil {
+				log.Printf("error reading binary: %v", err)
+				return err
+			}
+			if err := os.MkdirAll(dirPath, 0o755); err != nil {
+				return err
+			}
+
+			entries, err := os.ReadDir(dirPath)
+			if err != nil {
+				return err
+			}
+
+			var ndjson bytes.Buffer
+			for _, ent := range entries {
+				if ent.IsDir() {
+					continue
+				}
+
+				if ent.Name() == "plan.json" {
+					continue
+				}
+
+				b, err := os.ReadFile(dirPath + "/" + ent.Name())
+				if err != nil {
+					return err
+				}
+
+				b = bytes.TrimSpace(b)
+				if len(b) == 0 {
+					continue
+				}
+
+				ndjson.Write(b)
+				ndjson.WriteByte('\n')
+			}
+			res, err := s.taskRuntime.RunTask(context.TODO(), binary, ndjson.Bytes())
+			if err != nil {
+				log.Printf("error running reducer wasm: %v", err)
+				return err
+			}
+			os.WriteFile(dirPath+"/output.json", res, 0o644)
+			log.Println("wrote the output successfully")
+
+		default:
+		}
+	}
+
+	return nil
 }
 
 func (s *Scheduler) maybeDispatchTasks(ctx context.Context) {
@@ -241,6 +368,7 @@ func (s *Scheduler) maybeDispatchTasks(ctx context.Context) {
 				taskPayload := runtime.Task{
 					OpCode: kademliadfs.TaskExecute,
 					TaskID: taskID,
+					Stdin:  task.Stdin,
 					Binary: binary,
 					TTL:    time.Second * 10, // TODO: remove
 				}

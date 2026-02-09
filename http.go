@@ -81,7 +81,12 @@ func (s *Server) handleJob() http.HandlerFunc {
 
 			s.jobParser.Parse(r.Body, &jobSpec)
 
-			log.Println(jobSpec.ToString())
+			log.Println(jobSpec)
+			err := s.scheduler.RegisterJob(jobSpec)
+			if err != nil {
+				log.Println(err)
+				w.WriteHeader(http.StatusBadRequest)
+			}
 
 			w.WriteHeader(http.StatusOK)
 		}
@@ -110,7 +115,8 @@ func (s *Server) handleWasm() http.HandlerFunc {
 			Binary:     binary,
 			TasksTotal: 300,
 		}
-		s.scheduler.RegisterJob(job)
+		_ = job
+		// s.scheduler.RegisterJob(job)
 		w.WriteHeader(http.StatusOK)
 	}
 }

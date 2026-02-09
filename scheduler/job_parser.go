@@ -28,7 +28,25 @@ type JobSpec struct {
 	Tasks map[string]TaskSpec `yaml:"tasks"`
 }
 
-func (js JobSpec) ToString() string {
+type TaskSpec struct { // TODO: make this an interface
+	Input string `yaml:"input, omitempty"`
+	Run   string `yaml:"run"`
+}
+
+type ExecutionPlan struct {
+	Name  string              `json:"name"`
+	Total int                 `json:"total"`
+	Tasks []ExecutionTaskPlan `json:"tasks"`
+}
+
+type ExecutionTaskPlan struct {
+	ID        int    `json:"id"`
+	Stdin     string `json:"stdin"`
+	Metadata  any    `json:"metadata"`
+	InputRefs []any  `json:"input_refs"`
+}
+
+func (js JobSpec) String() string {
 	name := js.Name
 	if name == "" {
 		name = "<unnamed>"
@@ -52,11 +70,6 @@ func (js JobSpec) ToString() string {
 		}
 	}
 	return strings.TrimRight(b.String(), "\n")
-}
-
-type TaskSpec struct {
-	Input string `yaml:"input, omitempty"`
-	Run   string `yaml:"run"`
 }
 
 type YAMLParser struct{}

@@ -9,7 +9,7 @@ import (
 )
 
 type TaskRuntime interface {
-	RunTask(ctx context.Context, binary []byte) ([]byte, error)
+	RunTask(ctx context.Context, binary []byte, stdin []byte) ([]byte, error)
 	EncodeTask(task Task) ([]byte, error)
 	DecodeTask(data []byte) Task
 }
@@ -20,10 +20,10 @@ type TaskNetwork interface {
 }
 
 type Task struct {
-	OpCode    kademliadfs.OpCode
-	TaskID    [32]byte
-	Binary    []byte
-	TTL       time.Duration
-	Result    []byte
-	InputFile []byte
+	OpCode kademliadfs.OpCode
+	TaskID [32]byte
+	Binary []byte
+	TTL    time.Duration
+	Result []byte
+	Stdin  []byte
 }

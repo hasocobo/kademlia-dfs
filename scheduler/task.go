@@ -3,6 +3,7 @@ package scheduler
 import (
 	"fmt"
 	"log"
+	"os"
 	"time"
 )
 
@@ -11,6 +12,11 @@ type TaskDescription struct {
 	JobID     JobID
 	Name      string
 	TaskState TaskState
+
+	Binary   []byte
+	ChunkID  int
+	Stdin    []byte
+	Metadata []byte
 
 	LeaseUntil time.Time
 
@@ -40,7 +46,7 @@ func (s *Scheduler) markTaskDispatched(taskID TaskID) error {
 	return nil
 }
 
-func (s *Scheduler) markTaskDone(taskID TaskID) error {
+func (s *Scheduler) markTaskDone(taskID TaskID, result []byte) error {
 	task := s.mustTask(taskID)
 
 	if task.TaskState == StateDone {
@@ -56,6 +62,13 @@ func (s *Scheduler) markTaskDone(taskID TaskID) error {
 	if !exists {
 		return fmt.Errorf("job with jobID: %v does not exist", task.JobID)
 	}
+
+	writeErr := os.WriteFile(fmt.Sprintf("../.jobs/%v/%v.json", task.JobID, task.ChunkID), result, 0o644)
+	if writeErr != nil {
+		log.Printf("error writing plan: %v", writeErr)
+		return writeErr
+	}
+	log.Println("successfully wrote the result")
 
 	task.TaskState = StateDone
 	task.Queued = false

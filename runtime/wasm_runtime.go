@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"fmt"
@@ -14,30 +15,38 @@ import (
 
 type WasmRuntime struct{}
 
-func (runtime WasmRuntime) RunTask(ctx context.Context, wasmBinary []byte) ([]byte, error) {
+func (runtime WasmRuntime) RunTask(ctx context.Context, wasmBinary []byte, stdin []byte) ([]byte, error) {
 	r := wazero.NewRuntime(ctx)
 	defer r.Close(ctx)
 
+	var stdout, stderr bytes.Buffer
+	var config wazero.ModuleConfig
+
 	wasi_snapshot_preview1.MustInstantiate(ctx, r)
-	config := wazero.NewModuleConfig().WithStartFunctions("_initialize")
 
-	mod, err := r.InstantiateWithConfig(ctx, wasmBinary, config)
-	if err != nil {
-		log.Printf("error instantiating module: %v", err)
-		return nil, err
+	if len(stdin) == 0 || stdin == nil {
+		config = wazero.NewModuleConfig().WithStartFunctions("_initialize").
+			WithStdout(&stdout).WithStderr(&stderr)
+	} else {
+		config = wazero.NewModuleConfig().WithStartFunctions("_initialize").
+			WithStdin(bytes.NewReader(stdin)).WithStdout(&stdout).WithStderr(&stderr)
 	}
 
-	res, err := mod.ExportedFunction("run").Call(ctx, 5, 8)
+	mod, instErr := r.InstantiateWithConfig(ctx, wasmBinary, config)
+	if instErr != nil {
+		log.Printf("error in InstantiateWithConfig: %v", instErr)
+		return nil, fmt.Errorf("error in InstantiateWithConfig: %v", instErr)
+	}
+	defer mod.Close(ctx)
+
+	res, err := mod.ExportedFunction("run").Call(ctx)
 	if err != nil {
-		log.Printf("error calling func %v", err)
-		return nil, err
+		return nil, fmt.Errorf("error in method call: %v", err)
 	}
 
-	resultValue := int32(res[0])
-	resultBytes := make([]byte, 4)
-	binary.BigEndian.PutUint32(resultBytes, uint32(resultValue))
-	log.Printf("result of the operation: %v", resultValue)
-	return resultBytes, nil
+	log.Printf("result of the operation(stdout): %v", stdout.String())
+	log.Printf("result of the operation: %v", res)
+	return stdout.Bytes(), nil
 }
 
 func (runtime WasmRuntime) EncodeTask(task Task) ([]byte, error) {
@@ -82,13 +91,13 @@ func (runtime WasmRuntime) EncodeTask(task Task) ([]byte, error) {
 		return nil, fmt.Errorf("failed encoding Result: %v", err)
 	}
 
-	inputFileLength := uint64(len(task.InputFile))
-	encodedMessage, err = binary.Append(encodedMessage, binary.BigEndian, inputFileLength)
+	stdinLength := uint64(len(task.Stdin))
+	encodedMessage, err = binary.Append(encodedMessage, binary.BigEndian, stdinLength)
 	if err != nil {
 		return nil, fmt.Errorf("failed encoding inputFileLength: %v", err)
 	}
 
-	encodedMessage, err = binary.Append(encodedMessage, binary.BigEndian, task.InputFile)
+	encodedMessage, err = binary.Append(encodedMessage, binary.BigEndian, task.Stdin)
 	if err != nil {
 		return nil, fmt.Errorf("failed encoding inputFile: %v", err)
 	}
@@ -119,17 +128,17 @@ func (runtime WasmRuntime) DecodeTask(data []byte) Task {
 	result := data[:resultLength]
 	data = data[resultLength:]
 
-	inputFileLength := binary.BigEndian.Uint64(data[:8])
+	stdinLength := binary.BigEndian.Uint64(data[:8])
 	data = data[8:]
 
-	inputFile := data[:inputFileLength]
+	stdin := data[:stdinLength]
 
 	return Task{
-		OpCode:    kademliadfs.OpCode(opCode),
-		TaskID:    taskID,
-		Binary:    wasmBinary,
-		TTL:       ttl,
-		Result:    result,
-		InputFile: inputFile,
+		OpCode: kademliadfs.OpCode(opCode),
+		TaskID: taskID,
+		Binary: wasmBinary,
+		TTL:    ttl,
+		Result: result,
+		Stdin:  stdin,
 	}
 }
