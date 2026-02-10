@@ -11,9 +11,12 @@ import (
 )
 
 type JobDescription struct {
-	ID         JobID
-	Name       string
-	Binary     []byte
+	ID   JobID
+	Name string
+
+	Binary       []byte
+	MergerBinary []byte
+
 	InputFile  []byte
 	TasksDone  int
 	TasksTotal int // TODO: replace this part with a job description language like GDL

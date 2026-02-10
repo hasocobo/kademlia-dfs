@@ -1,7 +1,6 @@
 package scheduler
 
 import (
-	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -19,7 +18,8 @@ const (
 	taskQueueSize       = 1024
 	taskTTLSeconds      = 10
 	tickIntervalSeconds = 2
-	eventLoopBufferSize = 512
+	eventLoopBufferSize = 1024
+	jobDirPath          = "../.jobs"
 )
 
 type Scheduler struct {
@@ -140,12 +140,11 @@ func (s *Scheduler) handleEvent(ctx context.Context, event Event) error {
 		return nil
 
 	case EventJobDone:
-		jobID := e.jobID
-		job, exists := s.Jobs[jobID]
-		if !exists {
-			log.Printf("job: %v was not found in the job list", job)
+		err := s.markJobDone(e.jobID)
+		if err != nil {
+			return err
 		}
-		log.Printf("job: %v has completed successfully", job.Name)
+		return nil
 
 	case EventTaskDispatchFailed:
 		log.Printf("error sending task: %v, checking for node health via ping...", e.err)
@@ -197,12 +196,14 @@ func (s *Scheduler) HandleMessage(ctx context.Context, message []byte) ([]byte, 
 func (s *Scheduler) RegisterJob(job JobSpec) error {
 	jobID := kademliadfs.NewRandomId()
 	var executionPlan ExecutionPlan
-	dirPath := fmt.Sprintf("../.jobs/%v", jobID)
+	var jd JobDescription
+
+	var tasks []*TaskDescription
 
 	for name, taskSpec := range job.Tasks {
 		switch name {
 		case "split":
-			if err := os.MkdirAll(dirPath, 0o755); err != nil {
+			if err := os.MkdirAll(jobDirPath+"/"+jobID.String(), 0o755); err != nil {
 				log.Printf("error creating job dir: %v", err)
 				return err
 			}
@@ -226,7 +227,7 @@ func (s *Scheduler) RegisterJob(job JobSpec) error {
 			}
 			log.Println("successfully created the plan")
 
-			writeErr := os.WriteFile(dirPath+"/plan.json", plan, 0o644)
+			writeErr := os.WriteFile(jobDirPath+"/"+jobID.String()+"/plan.json", plan, 0o644)
 			if writeErr != nil {
 				log.Printf("error writing plan: %v", writeErr)
 				return writeErr
@@ -234,7 +235,7 @@ func (s *Scheduler) RegisterJob(job JobSpec) error {
 			log.Println("successfully wrote the plan")
 
 		case "execute":
-			planBytes, err := os.ReadFile(dirPath + "/plan.json")
+			planBytes, err := os.ReadFile(jobDirPath + "/" + jobID.String() + "/plan.json")
 			if err != nil {
 				log.Printf("error reading plan: %v", err)
 				return err
@@ -256,13 +257,14 @@ func (s *Scheduler) RegisterJob(job JobSpec) error {
 				return err
 			}
 
-			job := JobDescription{
+			jd = JobDescription{
 				ID:         jobID,
 				Name:       executionPlan.Name,
 				Binary:     binary,
 				TasksTotal: executionPlan.Total,
 			}
-			tasks := make([]*TaskDescription, len(executionPlan.Tasks))
+
+			tasks = make([]*TaskDescription, executionPlan.Total)
 
 			for i, t := range executionPlan.Tasks {
 				log.Println(t)
@@ -281,54 +283,14 @@ func (s *Scheduler) RegisterJob(job JobSpec) error {
 				}
 			}
 
-			s.events <- EventJobSubmitted{job: job, tasks: tasks}
-
 		case "merge":
-			time.Sleep(1 * time.Second)
 			binary, err := os.ReadFile(taskSpec.Run)
 			if err != nil {
 				log.Printf("error reading binary: %v", err)
 				return err
 			}
-			if err := os.MkdirAll(dirPath, 0o755); err != nil {
-				return err
-			}
-
-			entries, err := os.ReadDir(dirPath)
-			if err != nil {
-				return err
-			}
-
-			var ndjson bytes.Buffer
-			for _, ent := range entries {
-				if ent.IsDir() {
-					continue
-				}
-
-				if ent.Name() == "plan.json" {
-					continue
-				}
-
-				b, err := os.ReadFile(dirPath + "/" + ent.Name())
-				if err != nil {
-					return err
-				}
-
-				b = bytes.TrimSpace(b)
-				if len(b) == 0 {
-					continue
-				}
-
-				ndjson.Write(b)
-				ndjson.WriteByte('\n')
-			}
-			res, err := s.taskRuntime.RunTask(context.TODO(), binary, ndjson.Bytes())
-			if err != nil {
-				log.Printf("error running reducer wasm: %v", err)
-				return err
-			}
-			os.WriteFile(dirPath+"/output.json", res, 0o644)
-			log.Println("wrote the output successfully")
+			jd.MergerBinary = binary
+			s.events <- EventJobSubmitted{job: jd, tasks: tasks}
 
 		default:
 		}

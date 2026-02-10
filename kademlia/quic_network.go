@@ -89,7 +89,7 @@ func (network *QUICNetwork) SendTask(ctx context.Context, data []byte, addr net.
 		return nil, ctx.Err()
 	}
 
-	ctx, cancel := context.WithTimeout(ctx, timeoutDuration*time.Millisecond)
+	ctx, cancel := context.WithTimeout(ctx, 100*timeoutDuration*time.Millisecond)
 	defer cancel()
 
 	log.Printf("sending wasm runtime task over quic channel to %v", addr)

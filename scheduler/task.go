@@ -1,6 +1,8 @@
 package scheduler
 
 import (
+	"bytes"
+	"context"
 	"fmt"
 	"log"
 	"os"
@@ -79,9 +81,71 @@ func (s *Scheduler) markTaskDone(taskID TaskID, result []byte) error {
 
 	log.Printf("task: %v is of state: %v", task.Name, task.TaskState)
 	if job.TasksDone == job.TasksTotal {
-		job := s.mustJob(task.JobID)
-		log.Printf("job: %v has completed successfully", job.Name)
+		s.markJobDone(job.ID)
 	}
+	return nil
+}
+
+func (s *Scheduler) markJobDone(jobID JobID) error {
+	job := s.mustJob(jobID)
+	jobPath := jobDirPath + "/" + jobID.String()
+
+	if err := os.MkdirAll(jobPath, 0o755); err != nil {
+		log.Printf("error: failed to create job dir %s: %v", jobPath, err)
+		return err
+	}
+
+	entries, err := os.ReadDir(jobPath)
+	if err != nil {
+		log.Printf("error: failed to read job dir %s: %v", jobPath, err)
+		return err
+	}
+
+	var ndjson bytes.Buffer
+	for _, ent := range entries {
+		if ent.IsDir() {
+			continue
+		}
+		if ent.Name() == "plan.json" {
+			continue
+		}
+
+		filePath := jobPath + "/" + ent.Name()
+		b, err := os.ReadFile(filePath)
+		if err != nil {
+			log.Printf("error: failed to read file %s for job %s: %v", filePath, jobID.String(), err)
+			return err
+		}
+
+		b = bytes.TrimSpace(b)
+		if len(b) == 0 {
+			continue
+		}
+
+		if _, err := ndjson.Write(b); err != nil {
+			log.Printf("error: failed writing ndjson buffer for job %s (file %s): %v", jobID.String(), filePath, err)
+			return err
+		}
+		if err := ndjson.WriteByte('\n'); err != nil {
+			log.Printf("error: failed writing newline to ndjson buffer for job %s: %v", jobID.String(), err)
+			return err
+		}
+	}
+
+	res, err := s.taskRuntime.RunTask(context.TODO(), job.MergerBinary, ndjson.Bytes())
+	if err != nil {
+		log.Printf("error: running reducer wasm failed for job %s (%s): %v", jobID.String(), job.Name, err)
+		return err
+	}
+
+	outPath := jobPath + "/output.json"
+	if err := os.WriteFile(outPath, res, 0o644); err != nil {
+		log.Printf("error: failed to write output file %s for job %s (%s): %v", outPath, jobID.String(), job.Name, err)
+		return err
+	}
+
+	log.Printf("job %s (%s) wrote output successfully to %s", jobID.String(), job.Name, outPath)
+	log.Printf("job %s (%s) has completed successfully", jobID.String(), job.Name)
 	return nil
 }
 
