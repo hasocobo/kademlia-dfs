@@ -32,6 +32,8 @@ type Scheduler struct {
 
 	Node *kademliadfs.Node
 
+	stats Stats
+
 	taskRuntime runtime.TaskRuntime
 	taskNetwork runtime.TaskNetwork
 }
@@ -49,7 +51,7 @@ const (
 )
 
 func NewScheduler(node *kademliadfs.Node, taskRuntime runtime.TaskRuntime,
-	taskNetwork runtime.TaskNetwork,
+	taskNetwork runtime.TaskNetwork, stats Stats,
 ) *Scheduler {
 	return &Scheduler{
 		Jobs:           make(map[JobID]*JobDescription),
@@ -57,6 +59,7 @@ func NewScheduler(node *kademliadfs.Node, taskRuntime runtime.TaskRuntime,
 		events:         make(chan Event, eventLoopBufferSize),
 		readyTaskQueue: make(chan TaskID, taskQueueSize),
 		Node:           node,
+		stats:          stats,
 		taskNetwork:    taskNetwork,
 		taskRuntime:    taskRuntime,
 	}
@@ -81,7 +84,7 @@ func (s *Scheduler) Start(ctx context.Context) {
 }
 
 func (s *Scheduler) runLoop(ctx context.Context) {
-	log.Println("loop is running")
+	log.Println("event loop is running")
 	for {
 		select {
 		case event := <-s.events:
@@ -185,6 +188,10 @@ func (s *Scheduler) HandleMessage(ctx context.Context, message []byte) ([]byte, 
 	case kademliadfs.TaskResult:
 		s.events <- EventTaskDone{taskID: task.TaskID, result: task.Result}
 		return nil, nil
+
+	case kademliadfs.TaskLeaseRequest:
+
+	case kademliadfs.TaskLeaseResponse:
 
 	default:
 		return nil, fmt.Errorf("unknown message type")
@@ -332,7 +339,7 @@ func (s *Scheduler) maybeDispatchTasks(ctx context.Context) {
 					TaskID: taskID,
 					Stdin:  task.Stdin,
 					Binary: binary,
-					TTL:    time.Second * 10, // TODO: remove
+					TTL:    time.Second * 20, // TODO: remove
 				}
 
 				encodedTask, err := s.taskRuntime.EncodeTask(taskPayload)

@@ -32,4 +32,6 @@ go.work.sum
  .vscode/
 
 # Build artifacts
-cmd/kademlia
+cmd/*
+data/*
+.jobs/*

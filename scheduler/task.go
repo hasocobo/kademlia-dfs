@@ -20,11 +20,14 @@ type TaskDescription struct {
 	Stdin    []byte
 	Metadata []byte
 
-	LeaseUntil time.Time
-
+	LeaseUntil   time.Time
 	BackoffUntil time.Time // if a task dispatch is not successful, retry again when time.Now() > BackoffUntil
-	Attempts     int
-	Queued       bool // is in the readyTaskQueue?
+	EnqueuedAt   time.Time
+	DispatchedAt time.Time
+	DoneAt       time.Time
+
+	Attempts int
+	Queued   bool // is in the readyTaskQueue?
 }
 
 func (ts TaskState) String() string {
@@ -44,6 +47,10 @@ func (s *Scheduler) markTaskDispatched(taskID TaskID) error {
 	task.Queued = false
 	task.TaskState = StateRunning
 	task.LeaseUntil = time.Now().Add(time.Second * taskTTLSeconds)
+	task.DispatchedAt = time.Now()
+
+	s.stats.IncAssigned()
+	s.stats.ObserveQueueWait(task.DispatchedAt.Sub(task.EnqueuedAt))
 
 	return nil
 }
@@ -77,6 +84,11 @@ func (s *Scheduler) markTaskDone(taskID TaskID, result []byte) error {
 	task.BackoffUntil = time.Time{}
 	task.LeaseUntil = time.Time{}
 	job.TasksDone++
+	task.DoneAt = time.Now()
+
+	s.stats.IncCompleted()
+	s.stats.ObserveTaskRunDuration(task.DoneAt.Sub(task.DispatchedAt))
+
 	log.Printf("job progress: %v/%v", job.TasksDone, job.TasksTotal)
 
 	log.Printf("task: %v is of state: %v", task.Name, task.TaskState)
@@ -165,6 +177,7 @@ func (s *Scheduler) markTaskDispatchFailed(taskID TaskID) error {
 	task.BackoffUntil = time.Now().Add(calculateBackoffUntil(task.Attempts))
 	task.LeaseUntil = time.Time{}
 	task.Queued = false
+	s.stats.IncDispatchFailed()
 
 	log.Printf("task is backing off until: %v", task.BackoffUntil)
 
@@ -189,7 +202,11 @@ func (s *Scheduler) enqueueTask(taskID TaskID) error {
 			task.Name)
 		task.TaskState = StatePending
 		task.Queued = true
+
 		s.readyTaskQueue <- taskID
+
+		task.EnqueuedAt = time.Now()
+		s.stats.IncEnqueued()
 	}
 	return nil
 }

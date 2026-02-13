@@ -9,6 +9,8 @@ import (
 
 	kademliadfs "github.com/hasocobo/kademlia-dfs/kademlia"
 	"github.com/hasocobo/kademlia-dfs/scheduler"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 type Server struct {
@@ -16,9 +18,12 @@ type Server struct {
 	scheduler      *scheduler.Scheduler
 	httpPort       int
 	jobParser      scheduler.JobParser
+	reg            *prometheus.Registry
 }
 
-func NewServer(scheduler *scheduler.Scheduler, httpPort int, jobParser scheduler.JobParser) *Server {
+func NewServer(scheduler *scheduler.Scheduler, httpPort int,
+	jobParser scheduler.JobParser, reg *prometheus.Registry,
+) *Server {
 	return &Server{
 		storedBinaries: map[string][]byte{
 			"add":      wasmAdd,
@@ -27,6 +32,7 @@ func NewServer(scheduler *scheduler.Scheduler, httpPort int, jobParser scheduler
 		httpPort:  httpPort,
 		scheduler: scheduler,
 		jobParser: jobParser,
+		reg:       reg,
 	}
 }
 
@@ -126,6 +132,8 @@ func (s *Server) ServeHTTP(ctx context.Context) error {
 	mux.HandleFunc("/kv", s.handleKV(ctx))
 	mux.HandleFunc("/wasm/{binaryName}", s.handleWasm())
 	mux.HandleFunc("/jobs", s.handleJob())
+
+	mux.Handle("/metrics", promhttp.HandlerFor(s.reg, promhttp.HandlerOpts{}))
 
 	addr := "127.0.0.1:" + strconv.Itoa(s.httpPort)
 	log.Println("listening http on " + addr)

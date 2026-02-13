@@ -16,6 +16,7 @@ import (
 	kademliadfs "github.com/hasocobo/kademlia-dfs/kademlia"
 	"github.com/hasocobo/kademlia-dfs/runtime"
 	"github.com/hasocobo/kademlia-dfs/scheduler"
+	"github.com/prometheus/client_golang/prometheus"
 )
 
 //go:embed .binaries/add.wasm
@@ -93,7 +94,9 @@ func run(ctx context.Context, cfg Config) error {
 	}
 
 	parser := scheduler.YAMLParser{}
-	scheduler := scheduler.NewScheduler(node, taskRuntime, quicNetwork)
+	reg := prometheus.NewRegistry()
+	prometheusStats := scheduler.NewPrometheusStats(reg)
+	scheduler := scheduler.NewScheduler(node, taskRuntime, quicNetwork, prometheusStats)
 
 	quicNetwork.SetDHTHandler(node)
 	quicNetwork.SetTaskHandler(scheduler)
@@ -110,7 +113,7 @@ func run(ctx context.Context, cfg Config) error {
 		}
 	}
 
-	server := NewServer(scheduler, udpPort+1000, parser)
+	server := NewServer(scheduler, udpPort+1000, parser, reg)
 	go func() {
 		if err := server.ServeHTTP(ctx); err != nil {
 			log.Printf("http server error: %v", err)
