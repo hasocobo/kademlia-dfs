@@ -8,13 +8,14 @@ import (
 	kademliadfs "github.com/hasocobo/kademlia-dfs/kademlia"
 )
 
+// type DeviceCapabilities int
+
 type TaskRuntime interface {
 	RunTask(ctx context.Context, binary []byte, stdin []byte) ([]byte, error)
-	EncodeTask(task Task) ([]byte, error)
-	DecodeTask(data []byte) Task
 }
 
 type TaskNetwork interface {
+	RequestTask(context.Context, []byte, net.Addr) ([]byte, error)
 	SendTask(ctx context.Context, data []byte, addr net.Addr) ([]byte, error)
 	Listen(ctx context.Context) error
 }

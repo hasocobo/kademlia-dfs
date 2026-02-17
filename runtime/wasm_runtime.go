@@ -49,7 +49,7 @@ func (runtime WasmRuntime) RunTask(ctx context.Context, wasmBinary []byte, stdin
 	return stdout.Bytes(), nil
 }
 
-func (runtime WasmRuntime) EncodeTask(task Task) ([]byte, error) {
+func EncodeTask(task Task) ([]byte, error) {
 	encodedMessage := make([]byte, 0)
 	var err error
 
@@ -105,7 +105,7 @@ func (runtime WasmRuntime) EncodeTask(task Task) ([]byte, error) {
 	return encodedMessage, nil
 }
 
-func (runtime WasmRuntime) DecodeTask(data []byte) Task {
+func DecodeTask(data []byte) Task {
 	opCode := data[0]
 	data = data[1:]
 

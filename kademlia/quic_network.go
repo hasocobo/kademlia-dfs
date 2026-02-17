@@ -84,6 +84,10 @@ func (network *QUICNetwork) SetTaskHandler(taskHandler TaskHandler) {
 	network.taskHandler = taskHandler
 }
 
+func (network *QUICNetwork) RequestTask(ctx context.Context, data []byte, addr net.Addr) ([]byte, error) {
+	return nil, nil
+}
+
 func (network *QUICNetwork) SendTask(ctx context.Context, data []byte, addr net.Addr) ([]byte, error) {
 	if ctx.Err() != nil {
 		return nil, ctx.Err()

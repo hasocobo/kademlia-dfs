@@ -96,10 +96,12 @@ func run(ctx context.Context, cfg Config) error {
 	parser := scheduler.YAMLParser{}
 	reg := prometheus.NewRegistry()
 	prometheusStats := scheduler.NewPrometheusStats(reg)
-	scheduler := scheduler.NewScheduler(node, taskRuntime, quicNetwork, prometheusStats)
+	sched := scheduler.NewScheduler(node, taskRuntime, quicNetwork, prometheusStats)
+	worker := scheduler.NewWorker()
+	taskHandler := scheduler.NewTaskHandler(sched, worker)
 
 	quicNetwork.SetDHTHandler(node)
-	quicNetwork.SetTaskHandler(scheduler)
+	quicNetwork.SetTaskHandler(taskHandler)
 
 	if !isBootstrapNode {
 		bootstrapContact := kademliadfs.Contact{
@@ -113,7 +115,7 @@ func run(ctx context.Context, cfg Config) error {
 		}
 	}
 
-	server := NewServer(scheduler, udpPort+1000, parser, reg)
+	server := NewServer(sched, udpPort+1000, parser, reg)
 	go func() {
 		if err := server.ServeHTTP(ctx); err != nil {
 			log.Printf("http server error: %v", err)
@@ -121,7 +123,7 @@ func run(ctx context.Context, cfg Config) error {
 		}
 	}()
 
-	scheduler.Start(ctx)
+	sched.Start(ctx)
 
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)

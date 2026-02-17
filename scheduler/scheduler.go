@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"net"
 	"os"
 	"time"
 
@@ -34,7 +33,7 @@ type Scheduler struct {
 
 	stats Stats
 
-	taskRuntime runtime.TaskRuntime
+	planner     runtime.TaskRuntime // only for planning, actual execution is in the worker package
 	taskNetwork runtime.TaskNetwork
 }
 
@@ -50,7 +49,7 @@ const (
 	StateDone
 )
 
-func NewScheduler(node *kademliadfs.Node, taskRuntime runtime.TaskRuntime,
+func NewScheduler(node *kademliadfs.Node, planner runtime.TaskRuntime,
 	taskNetwork runtime.TaskNetwork, stats Stats,
 ) *Scheduler {
 	return &Scheduler{
@@ -61,26 +60,27 @@ func NewScheduler(node *kademliadfs.Node, taskRuntime runtime.TaskRuntime,
 		Node:           node,
 		stats:          stats,
 		taskNetwork:    taskNetwork,
-		taskRuntime:    taskRuntime,
+		planner:        planner,
 	}
 }
 
 func (s *Scheduler) Start(ctx context.Context) {
-	go func() {
-		t := time.NewTicker(tickIntervalSeconds * time.Second)
-		defer t.Stop()
-
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-t.C:
-				s.events <- EventTick{}
-			}
-		}
-	}()
-
+	go s.startTicker(ctx)
 	go s.runLoop(ctx)
+}
+
+func (s *Scheduler) startTicker(ctx context.Context) {
+	t := time.NewTicker(tickIntervalSeconds * time.Second)
+	defer t.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			s.events <- EventTick{}
+		}
+	}
 }
 
 func (s *Scheduler) runLoop(ctx context.Context) {
@@ -90,7 +90,6 @@ func (s *Scheduler) runLoop(ctx context.Context) {
 		case event := <-s.events:
 			log.Printf("I got an event of type: %T", event)
 			s.handleEvent(ctx, event)
-			s.maybeDispatchTasks(ctx)
 		case <-ctx.Done():
 			return
 		}
@@ -169,35 +168,8 @@ func (s *Scheduler) handleEvent(ctx context.Context, event Event) error {
 	return nil
 }
 
-func (s *Scheduler) HandleMessage(ctx context.Context, message []byte) ([]byte, error) {
-	task := s.taskRuntime.DecodeTask(message)
-
-	switch task.OpCode {
-	case kademliadfs.TaskExecute:
-		if len(task.Binary) != 0 {
-			response, err := s.taskRuntime.RunTask(ctx, task.Binary, task.Stdin)
-			if err != nil {
-				log.Printf("error executing task: %v", err)
-				return nil, err
-			}
-
-			task.OpCode = kademliadfs.TaskResult
-			task.Result = response
-			return s.taskRuntime.EncodeTask(task) // TODO: add error checking
-		}
-	case kademliadfs.TaskResult:
-		s.events <- EventTaskDone{taskID: task.TaskID, result: task.Result}
-		return nil, nil
-
-	case kademliadfs.TaskLeaseRequest:
-
-	case kademliadfs.TaskLeaseResponse:
-
-	default:
-		return nil, fmt.Errorf("unknown message type")
-	}
-
-	return nil, fmt.Errorf("error handling the message")
+func (s *Scheduler) HandleTaskLeaseResponse(ctx context.Context, taskPayload runtime.Task) error {
+	return nil
 }
 
 func (s *Scheduler) RegisterJob(job JobSpec) error {
@@ -227,7 +199,7 @@ func (s *Scheduler) RegisterJob(job JobSpec) error {
 				return err
 			}
 
-			plan, err := s.taskRuntime.RunTask(context.TODO(), binary, inputFile)
+			plan, err := s.planner.RunTask(context.TODO(), binary, inputFile)
 			if err != nil {
 				log.Printf("error running planner wasm: %v", err)
 				return err
@@ -304,70 +276,4 @@ func (s *Scheduler) RegisterJob(job JobSpec) error {
 	}
 
 	return nil
-}
-
-func (s *Scheduler) maybeDispatchTasks(ctx context.Context) {
-	burstSize := 32 // will drain tasks as bursts to avoid spamming the workers with tasks
-	for range burstSize {
-		select {
-		case <-ctx.Done():
-			return
-		case taskID := <-s.readyTaskQueue:
-			nodesToSendCode := s.Node.RoutingTable.FindClosest(kademliadfs.NewRandomId(), 1)
-
-			err := s.markTaskDispatched(taskID)
-			if err != nil {
-				log.Println(err.Error())
-				return
-			}
-
-			task := s.mustTask(taskID)
-			job, exists := s.Jobs[task.JobID]
-			var binary []byte
-			if exists {
-				binary = job.Binary
-			}
-			if len(nodesToSendCode) == 0 {
-				log.Println("no nodes found to send the tasks")
-				return
-			}
-			nodeToSendCode := nodesToSendCode[0]
-
-			go func(contact kademliadfs.Contact) {
-				taskPayload := runtime.Task{
-					OpCode: kademliadfs.TaskExecute,
-					TaskID: taskID,
-					Stdin:  task.Stdin,
-					Binary: binary,
-					TTL:    time.Second * 20, // TODO: remove
-				}
-
-				encodedTask, err := s.taskRuntime.EncodeTask(taskPayload)
-				if err != nil {
-					log.Printf("error encoding wasm task: %v", err)
-					return
-				}
-				addr := &net.UDPAddr{IP: nodeToSendCode.IP, Port: nodeToSendCode.Port}
-				response, err := s.taskNetwork.SendTask(ctx, encodedTask, addr)
-				if err != nil {
-					s.events <- EventTaskDispatchFailed{
-						taskID:  taskID,
-						contact: nodeToSendCode,
-						err:     err,
-					}
-					return
-				}
-
-				if len(response) > 0 {
-					if _, err := s.HandleMessage(ctx, response); err != nil {
-						log.Printf("error handling the task response: %v", err)
-						return
-					}
-				}
-			}(nodeToSendCode)
-
-		default:
-			return
-		}
-	}
 }

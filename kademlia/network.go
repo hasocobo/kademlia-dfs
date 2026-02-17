@@ -284,10 +284,9 @@ const (
 	FindValueResponse
 	StoreRequest
 	StoreResponse
-	TaskExecute
-	TaskResult
 	TaskLeaseRequest
 	TaskLeaseResponse
+	TaskExecutionResponse
 )
 
 func (network *UDPNetwork) SetDHTHandler(dhtHandler DHTHandler) {

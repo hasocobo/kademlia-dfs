@@ -7,6 +7,9 @@ import (
 	"log"
 	"os"
 	"time"
+
+	kademliadfs "github.com/hasocobo/kademlia-dfs/kademlia"
+	"github.com/hasocobo/kademlia-dfs/runtime"
 )
 
 type TaskDescription struct {
@@ -32,6 +35,38 @@ type TaskDescription struct {
 
 func (ts TaskState) String() string {
 	return []string{"PENDING", "RUNNING", "DONE"}[ts]
+}
+
+type TaskHandler struct {
+	scheduler *Scheduler
+	worker    *Worker
+}
+
+func NewTaskHandler(sched *Scheduler, worker *Worker) TaskHandler {
+	return TaskHandler{scheduler: sched, worker: worker}
+}
+
+func (th TaskHandler) HandleMessage(ctx context.Context, message []byte) ([]byte, error) {
+	task := runtime.DecodeTask(message)
+
+	switch task.OpCode {
+	case kademliadfs.TaskExecutionResponse:
+		th.scheduler.events <- EventTaskDone{taskID: task.TaskID, result: task.Result}
+		return nil, nil
+
+	case kademliadfs.TaskLeaseRequest:
+
+	case kademliadfs.TaskLeaseResponse:
+		err := th.scheduler.HandleTaskLeaseResponse(ctx, task)
+		if err != nil {
+			break
+		}
+
+	default:
+		return nil, fmt.Errorf("unknown message type")
+	}
+
+	return nil, fmt.Errorf("error handling the message")
 }
 
 func (s *Scheduler) markTaskDispatched(taskID TaskID) error {
@@ -144,7 +179,7 @@ func (s *Scheduler) markJobDone(jobID JobID) error {
 		}
 	}
 
-	res, err := s.taskRuntime.RunTask(context.TODO(), job.MergerBinary, ndjson.Bytes())
+	res, err := s.planner.RunTask(context.TODO(), job.MergerBinary, ndjson.Bytes())
 	if err != nil {
 		log.Printf("error: running reducer wasm failed for job %s (%s): %v", jobID.String(), job.Name, err)
 		return err
