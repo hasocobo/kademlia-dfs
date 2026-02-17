@@ -85,7 +85,60 @@ func (network *QUICNetwork) SetTaskHandler(taskHandler TaskHandler) {
 }
 
 func (network *QUICNetwork) RequestTask(ctx context.Context, data []byte, addr net.Addr) ([]byte, error) {
-	return nil, nil
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, timeoutDuration*time.Millisecond)
+	defer cancel()
+
+	conn, err := network.tr.Dial(ctx, addr, &tls.Config{
+		InsecureSkipVerify: true,
+		ServerName:         "google.com",
+		NextProtos:         []string{"drone-net"},
+	}, &quic.Config{})
+	if err != nil {
+		return nil, fmt.Errorf("error dialing quic: %v", err)
+	}
+	defer conn.CloseWithError(0, "done")
+
+	done := make(chan struct{})
+	go func() {
+		select {
+		case <-ctx.Done():
+			conn.CloseWithError(0, ctx.Err().Error())
+		case <-done:
+		}
+	}()
+	defer close(done)
+
+	str, err := conn.OpenStream()
+	if err != nil {
+		return nil, fmt.Errorf("error opening quic stream: %v", err)
+	}
+	defer str.Close()
+
+	lengthBytes := make([]byte, 8)
+	binary.BigEndian.PutUint64(lengthBytes, uint64(len(data)))
+	if _, err := str.Write(lengthBytes); err != nil {
+		return nil, fmt.Errorf("error writing length: %v", err)
+	}
+	if _, err := str.Write(data); err != nil {
+		return nil, fmt.Errorf("error writing data: %v", err)
+	}
+
+	responseLengthBytes := make([]byte, 8)
+	if _, err := io.ReadFull(str, responseLengthBytes); err != nil {
+		return nil, fmt.Errorf("error reading response length: %v", err)
+	}
+	responseLength := binary.BigEndian.Uint64(responseLengthBytes)
+
+	response := make([]byte, responseLength)
+	if _, err := io.ReadFull(str, response); err != nil {
+		return nil, fmt.Errorf("error reading response: %v", err)
+	}
+
+	return response, nil
 }
 
 func (network *QUICNetwork) SendTask(ctx context.Context, data []byte, addr net.Addr) ([]byte, error) {
@@ -93,7 +146,7 @@ func (network *QUICNetwork) SendTask(ctx context.Context, data []byte, addr net.
 		return nil, ctx.Err()
 	}
 
-	ctx, cancel := context.WithTimeout(ctx, 100*timeoutDuration*time.Millisecond)
+	ctx, cancel := context.WithTimeout(ctx, timeoutDuration*time.Millisecond)
 	defer cancel()
 
 	log.Printf("sending wasm runtime task over quic channel to %v", addr)
@@ -146,10 +199,6 @@ func (network *QUICNetwork) SendTask(ctx context.Context, data []byte, addr net.
 	}
 
 	return response, nil
-}
-
-func (network *QUICNetwork) SendTaskResult(ctx context.Context) ([]byte, error) {
-	return nil, nil
 }
 
 func (network *QUICNetwork) Listen(ctx context.Context) error {
@@ -264,7 +313,9 @@ func (network *QUICNetwork) Listen(ctx context.Context) error {
 				return
 			}
 
-			log.Println("sending to task handler")
+			ctx, cancel := context.WithTimeout(ctx, timeoutDuration*time.Millisecond)
+			defer cancel()
+
 			response, err := network.taskHandler.HandleMessage(ctx, request)
 			if err != nil {
 				log.Printf("error handling message: %v", err)

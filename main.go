@@ -97,7 +97,7 @@ func run(ctx context.Context, cfg Config) error {
 	reg := prometheus.NewRegistry()
 	prometheusStats := scheduler.NewPrometheusStats(reg)
 	sched := scheduler.NewScheduler(node, taskRuntime, quicNetwork, prometheusStats)
-	worker := scheduler.NewWorker()
+	worker := scheduler.NewWorker(taskRuntime, quicNetwork)
 	taskHandler := scheduler.NewTaskHandler(sched, worker)
 
 	quicNetwork.SetDHTHandler(node)
@@ -123,7 +123,11 @@ func run(ctx context.Context, cfg Config) error {
 		}
 	}()
 
-	sched.Start(ctx)
+	if isBootstrapNode {
+		sched.Start(ctx)
+	} else {
+		worker.Start(ctx)
+	}
 
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)

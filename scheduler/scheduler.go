@@ -25,7 +25,9 @@ type Scheduler struct {
 	Jobs  map[JobID]*JobDescription
 	Tasks map[TaskID]*TaskDescription
 
-	events chan Event
+	events        chan Event
+	leaseRequest  chan leaseRequest
+	leaseResponse chan leaseResponse
 
 	readyTaskQueue chan TaskID
 
@@ -35,6 +37,15 @@ type Scheduler struct {
 
 	planner     runtime.TaskRuntime // only for planning, actual execution is in the worker package
 	taskNetwork runtime.TaskNetwork
+}
+
+type leaseRequest struct {
+	response leaseResponse
+}
+
+type leaseResponse struct {
+	payload []byte
+	err     error
 }
 
 type (
@@ -110,16 +121,40 @@ func (s *Scheduler) handleEvent(ctx context.Context, event Event) error {
 		log.Printf("checking for expired tasks in %v tasks...", len(s.Tasks))
 
 		for taskID, task := range s.Tasks {
-			if task.LeaseUntil.Compare(time.Now()) == 1 || task.TaskState != StatePending {
+			if task.LeaseUntil.Compare(time.Now()) == 1 {
 				continue
 			}
+
+			if task.TaskState == StateDone {
+				continue
+			}
+
 			err := s.enqueueTask(taskID)
 			if err != nil {
 				log.Println(err.Error())
 				break
 			}
 		}
+	case EventLeaseRequest:
+		select {
+		case taskID := <-s.readyTaskQueue:
+			task := s.mustTask(taskID)
+			job := s.mustJob(task.JobID)
 
+			s.markTaskDispatched(taskID)
+
+			responseTask := runtime.Task{
+				OpCode: kademliadfs.TaskLeaseResponse,
+				TaskID: taskID,
+				Binary: job.Binary,
+				Stdin:  task.Stdin,
+			}
+
+			payload, err := runtime.EncodeTask(responseTask)
+			e.response <- leaseResponse{payload, err}
+		default:
+			e.response <- leaseResponse{nil, fmt.Errorf("no tasks available")}
+		}
 	case EventJobSubmitted:
 		job := e.job
 		log.Printf("job received: %v", job.Name)
@@ -153,10 +188,6 @@ func (s *Scheduler) handleEvent(ctx context.Context, event Event) error {
 
 		s.markTaskDispatchFailed(e.taskID)
 
-		// for now, I just remove node but in the future we might first mark it as suspect and then ping it
-		log.Printf("node: %v is dead, removing from the network", e.contact.ID)
-		s.Node.RoutingTable.Remove(e.contact)
-
 	case EventTaskDone:
 		err := s.markTaskDone(e.taskID, e.result) // NOTE: use task instead of taskID
 		if err != nil {
@@ -168,8 +199,15 @@ func (s *Scheduler) handleEvent(ctx context.Context, event Event) error {
 	return nil
 }
 
-func (s *Scheduler) HandleTaskLeaseResponse(ctx context.Context, taskPayload runtime.Task) error {
-	return nil
+func (s *Scheduler) HandleTaskLeaseRequest(ctx context.Context) ([]byte, error) {
+	response := make(chan leaseResponse)
+	s.events <- EventLeaseRequest{response: response}
+
+	r := <-response
+	if r.err != nil {
+		return nil, r.err
+	}
+	return r.payload, nil
 }
 
 func (s *Scheduler) RegisterJob(job JobSpec) error {

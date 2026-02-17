@@ -47,7 +47,12 @@ func NewTaskHandler(sched *Scheduler, worker *Worker) TaskHandler {
 }
 
 func (th TaskHandler) HandleMessage(ctx context.Context, message []byte) ([]byte, error) {
-	task := runtime.DecodeTask(message)
+	task, err := runtime.DecodeTask(message)
+	if err != nil {
+		return nil, fmt.Errorf("error decoding task: %v", err)
+	}
+
+	log.Printf("HandleMessage: got a request of type: %v", task.OpCode)
 
 	switch task.OpCode {
 	case kademliadfs.TaskExecutionResponse:
@@ -55,18 +60,11 @@ func (th TaskHandler) HandleMessage(ctx context.Context, message []byte) ([]byte
 		return nil, nil
 
 	case kademliadfs.TaskLeaseRequest:
-
-	case kademliadfs.TaskLeaseResponse:
-		err := th.scheduler.HandleTaskLeaseResponse(ctx, task)
-		if err != nil {
-			break
-		}
+		return th.scheduler.HandleTaskLeaseRequest(ctx)
 
 	default:
 		return nil, fmt.Errorf("unknown message type")
 	}
-
-	return nil, fmt.Errorf("error handling the message")
 }
 
 func (s *Scheduler) markTaskDispatched(taskID TaskID) error {
@@ -231,10 +229,9 @@ func (s *Scheduler) enqueueTask(taskID TaskID) error {
 	}
 
 	if task.LeaseUntil.Compare(time.Now()) == -1 &&
-		task.TaskState == StatePending &&
 		!task.Queued && task.BackoffUntil.Compare(time.Now()) == -1 {
-		log.Printf("found an expired task: %v. rescheduling for execution",
-			task.Name)
+
+		log.Printf("found a task: %v. scheduling for execution", task.Name)
 		task.TaskState = StatePending
 		task.Queued = true
 

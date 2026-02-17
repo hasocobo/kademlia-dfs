@@ -19,7 +19,8 @@ type (
 		taskID TaskID
 		result []byte
 	}
-	EventJobDone struct{ jobID JobID }
+	EventJobDone      struct{ jobID JobID }
+	EventLeaseRequest struct{ response chan leaseResponse }
 	//	EventTaskDispatched struct{ taskID TaskID } no need for now
 )
 
@@ -28,5 +29,6 @@ func (EventJobSubmitted) isEvent()       {}
 func (EventJobDone) isEvent()            {}
 func (EventTaskDone) isEvent()           {}
 func (EventTaskDispatchFailed) isEvent() {}
+func (EventLeaseRequest) isEvent()       {}
 
 // func (EventTaskDispatched) isEvent() {}

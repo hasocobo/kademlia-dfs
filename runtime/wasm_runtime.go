@@ -105,7 +105,7 @@ func EncodeTask(task Task) ([]byte, error) {
 	return encodedMessage, nil
 }
 
-func DecodeTask(data []byte) Task {
+func DecodeTask(data []byte) (Task, error) {
 	opCode := data[0]
 	data = data[1:]
 
@@ -140,5 +140,5 @@ func DecodeTask(data []byte) Task {
 		TTL:    ttl,
 		Result: result,
 		Stdin:  stdin,
-	}
+	}, nil
 }
