@@ -25,9 +25,9 @@ type Scheduler struct {
 	Jobs  map[JobID]*JobDescription
 	Tasks map[TaskID]*TaskDescription
 
-	events        chan Event
-	leaseRequest  chan leaseRequest
-	leaseResponse chan leaseResponse
+	events               chan Event
+	leaseResponse        chan leaseResponse
+	pendingLeaseRequests []leaseRequest // list of chans of leaseRespons to send the task. used for long polling
 
 	readyTaskQueue chan TaskID
 
@@ -40,7 +40,8 @@ type Scheduler struct {
 }
 
 type leaseRequest struct {
-	response leaseResponse
+	ctx          context.Context
+	responseChan chan leaseResponse
 }
 
 type leaseResponse struct {
@@ -114,6 +115,21 @@ func (s *Scheduler) handleEvent(ctx context.Context, event Event) error {
 
 	switch e := event.(type) {
 	case EventTick:
+		log.Printf("checking for expired requests in the pendingLeaseRequests list...")
+		if len(s.pendingLeaseRequests) > 0 {
+
+			filtered := s.pendingLeaseRequests[:0]
+			for _, req := range s.pendingLeaseRequests {
+				if req.ctx.Err() == nil {
+					filtered = append(filtered, req)
+				} else {
+					log.Printf("removing an expired request")
+				}
+			}
+
+			s.pendingLeaseRequests = filtered
+		}
+
 		if len(s.Tasks) == 0 {
 			break
 		}
@@ -121,7 +137,7 @@ func (s *Scheduler) handleEvent(ctx context.Context, event Event) error {
 		log.Printf("checking for expired tasks in %v tasks...", len(s.Tasks))
 
 		for taskID, task := range s.Tasks {
-			if task.LeaseUntil.Compare(time.Now()) == 1 {
+			if task.LeaseUntil.After(time.Now()) {
 				continue
 			}
 
@@ -135,6 +151,7 @@ func (s *Scheduler) handleEvent(ctx context.Context, event Event) error {
 				break
 			}
 		}
+
 	case EventLeaseRequest:
 		select {
 		case taskID := <-s.readyTaskQueue:
@@ -151,9 +168,14 @@ func (s *Scheduler) handleEvent(ctx context.Context, event Event) error {
 			}
 
 			payload, err := runtime.EncodeTask(responseTask)
-			e.response <- leaseResponse{payload, err}
+			e.request.responseChan <- leaseResponse{payload, err}
+
 		default:
-			e.response <- leaseResponse{nil, fmt.Errorf("no tasks available")}
+			log.Printf("no task available, adding the request to the pending requests list")
+			s.pendingLeaseRequests = append(s.pendingLeaseRequests, leaseRequest{
+				responseChan: e.request.responseChan,
+				ctx:          e.request.ctx,
+			})
 		}
 	case EventJobSubmitted:
 		job := e.job
@@ -200,14 +222,22 @@ func (s *Scheduler) handleEvent(ctx context.Context, event Event) error {
 }
 
 func (s *Scheduler) HandleTaskLeaseRequest(ctx context.Context) ([]byte, error) {
-	response := make(chan leaseResponse)
-	s.events <- EventLeaseRequest{response: response}
-
-	r := <-response
-	if r.err != nil {
-		return nil, r.err
+	responseChan := make(chan leaseResponse, 1)
+	s.events <- EventLeaseRequest{
+		leaseRequest{responseChan: responseChan, ctx: ctx},
 	}
-	return r.payload, nil
+
+	select {
+	case r := <-responseChan:
+		if r.err != nil {
+			return nil, r.err
+		}
+		return r.payload, nil
+
+	case <-ctx.Done():
+		log.Print("timeout exceeded for HandleTaskLeaseRequest")
+		return nil, ctx.Err()
+	}
 }
 
 func (s *Scheduler) RegisterJob(job JobSpec) error {

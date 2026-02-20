@@ -20,7 +20,7 @@ type (
 		result []byte
 	}
 	EventJobDone      struct{ jobID JobID }
-	EventLeaseRequest struct{ response chan leaseResponse }
+	EventLeaseRequest struct{ request leaseRequest }
 	//	EventTaskDispatched struct{ taskID TaskID } no need for now
 )
 

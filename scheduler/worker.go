@@ -32,6 +32,7 @@ func NewWorker(exec runtime.TaskRuntime, network runtime.TaskNetwork) *Worker {
 }
 
 func (w *Worker) Start(ctx context.Context) {
+	log.Printf("worker starting")
 	w.startWorkers(ctx, execWorkerPoolSize, resultWorkerPoolSize)
 	go w.fetchTasks(ctx)
 }

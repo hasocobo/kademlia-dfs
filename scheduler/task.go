@@ -12,6 +12,10 @@ import (
 	"github.com/hasocobo/kademlia-dfs/runtime"
 )
 
+const (
+	taskTimeoutSeconds = 30
+)
+
 type TaskDescription struct {
 	ID        TaskID
 	JobID     JobID
@@ -60,6 +64,9 @@ func (th TaskHandler) HandleMessage(ctx context.Context, message []byte) ([]byte
 		return nil, nil
 
 	case kademliadfs.TaskLeaseRequest:
+		ctx, cancel := context.WithTimeout(ctx, time.Second*taskTimeoutSeconds)
+		defer cancel()
+
 		return th.scheduler.HandleTaskLeaseRequest(ctx)
 
 	default:
@@ -234,6 +241,37 @@ func (s *Scheduler) enqueueTask(taskID TaskID) error {
 		log.Printf("found a task: %v. scheduling for execution", task.Name)
 		task.TaskState = StatePending
 		task.Queued = true
+
+		// if there's a pending request, answer it first
+
+		if len(s.pendingLeaseRequests) > 0 {
+			log.Printf("enqueueTask: serving %v pending requests first", len(s.pendingLeaseRequests))
+			job := s.mustJob(task.JobID)
+
+			for len(s.pendingLeaseRequests) > 0 {
+				pendingLease := s.pendingLeaseRequests[0]
+				s.pendingLeaseRequests = s.pendingLeaseRequests[1:]
+
+				if pendingLease.ctx.Err() != nil {
+					log.Printf("enqueueTask: lease expired, continuing with the next lease if available")
+					continue
+				}
+
+				s.markTaskDispatched(task.ID)
+
+				responseTask := runtime.Task{
+					OpCode: kademliadfs.TaskLeaseResponse,
+					TaskID: taskID,
+					Binary: job.Binary,
+					Stdin:  task.Stdin,
+				}
+
+				payload, err := runtime.EncodeTask(responseTask)
+				pendingLease.responseChan <- leaseResponse{payload: payload, err: err}
+				log.Printf("enqueueTask: sent a task to the pending request's channel")
+				return nil
+			}
+		}
 
 		s.readyTaskQueue <- taskID
 

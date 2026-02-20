@@ -313,9 +313,6 @@ func (network *QUICNetwork) Listen(ctx context.Context) error {
 				return
 			}
 
-			ctx, cancel := context.WithTimeout(ctx, timeoutDuration*time.Millisecond)
-			defer cancel()
-
 			response, err := network.taskHandler.HandleMessage(ctx, request)
 			if err != nil {
 				log.Printf("error handling message: %v", err)
@@ -345,7 +342,7 @@ func (network *QUICNetwork) requestHandlerWorker(ctx context.Context) error {
 		default:
 			request := <-network.requestQueue
 			if network.dhtHandler == nil {
-				log.Println("rpc handler is not yet set")
+				log.Println("rpc handler is not set yet")
 				continue
 			}
 			network.handleIncomingRequest(ctx, request.message, request.address)
