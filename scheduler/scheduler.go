@@ -3,10 +3,15 @@ package scheduler
 import (
 	"context"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io/fs"
 	"log"
 	"os"
+	"path"
+	"strconv"
+	"strings"
 	"time"
 
 	kademliadfs "github.com/hasocobo/kademlia-dfs/kademlia"
@@ -77,6 +82,7 @@ func NewScheduler(node *kademliadfs.Node, planner runtime.TaskRuntime,
 }
 
 func (s *Scheduler) Start(ctx context.Context) {
+	s.reloadMemoryOnStartup(ctx, os.DirFS(jobDirPath))
 	go s.startTicker(ctx)
 	go s.runLoop(ctx)
 }
@@ -155,8 +161,16 @@ func (s *Scheduler) handleEvent(ctx context.Context, event Event) error {
 	case EventLeaseRequest:
 		select {
 		case taskID := <-s.readyTaskQueue:
-			task := s.mustTask(taskID)
-			job := s.mustJob(task.JobID)
+			task, ok := s.Tasks[taskID]
+			if !ok {
+				e.request.responseChan <- leaseResponse{nil, fmt.Errorf("task %v not found", taskID)}
+				break
+			}
+			job, ok := s.Jobs[task.JobID]
+			if !ok {
+				e.request.responseChan <- leaseResponse{nil, fmt.Errorf("job %v not found", task.JobID)}
+				break
+			}
 
 			s.markTaskDispatched(taskID)
 
@@ -267,6 +281,12 @@ func (s *Scheduler) RegisterJob(job JobSpec) error {
 				return err
 			}
 
+			writeErr := os.WriteFile(jobDirPath+"/"+jobID.String()+"/plan.wasm", binary, 0o644)
+			if writeErr != nil {
+				log.Printf("error writing plan for persistance: %v", writeErr)
+				return writeErr
+			}
+
 			plan, err := s.planner.RunTask(context.TODO(), binary, inputFile)
 			if err != nil {
 				log.Printf("error running planner wasm: %v", err)
@@ -274,7 +294,7 @@ func (s *Scheduler) RegisterJob(job JobSpec) error {
 			}
 			log.Println("successfully created the plan")
 
-			writeErr := os.WriteFile(jobDirPath+"/"+jobID.String()+"/plan.json", plan, 0o644)
+			writeErr = os.WriteFile(jobDirPath+"/"+jobID.String()+"/plan.json", plan, 0o644)
 			if writeErr != nil {
 				log.Printf("error writing plan: %v", writeErr)
 				return writeErr
@@ -302,6 +322,12 @@ func (s *Scheduler) RegisterJob(job JobSpec) error {
 			if err != nil {
 				log.Printf("error reading binary: %v", err)
 				return err
+			}
+
+			writeErr := os.WriteFile(jobDirPath+"/"+jobID.String()+"/map.wasm", binary, 0o644)
+			if writeErr != nil {
+				log.Printf("error writing exec for persistance: %v", writeErr)
+				return writeErr
 			}
 
 			jd = JobDescription{
@@ -336,6 +362,13 @@ func (s *Scheduler) RegisterJob(job JobSpec) error {
 				log.Printf("error reading binary: %v", err)
 				return err
 			}
+
+			writeErr := os.WriteFile(jobDirPath+"/"+jobID.String()+"/reduce.wasm", binary, 0o644)
+			if writeErr != nil {
+				log.Printf("error writing merge for persistence: %v", writeErr)
+				return writeErr
+			}
+
 			jd.MergerBinary = binary
 			s.events <- EventJobSubmitted{job: jd, tasks: tasks}
 
@@ -343,5 +376,151 @@ func (s *Scheduler) RegisterJob(job JobSpec) error {
 		}
 	}
 
+	return nil
+}
+
+// reloadMemoryOnStartup reconstructs the scheduler's unfinished jobs and tasks
+func (s *Scheduler) reloadMemoryOnStartup(ctx context.Context, fsys fs.FS) error {
+	log.Printf("reloading scheduler memory from disk...")
+
+	jobDirs, err := fs.ReadDir(fsys, ".")
+	if err != nil {
+		log.Printf("failed reading jobs root: %v", err)
+		return err
+	}
+
+	log.Printf("found %d job directories", len(jobDirs))
+
+	for _, jobDir := range jobDirs {
+		if !jobDir.IsDir() {
+			continue
+		}
+
+		jobName := jobDir.Name()
+		log.Printf("checking job folder: %s", jobName)
+
+		raw, err := hex.DecodeString(jobName)
+		if err != nil || len(raw) != 32 {
+			log.Printf("skipping invalid job folder: %s", jobName)
+			continue
+		}
+
+		var jobID JobID
+		copy(jobID[:], raw)
+
+		files, err := fs.ReadDir(fsys, jobName)
+		if err != nil {
+			log.Printf("failed reading job folder %s: %v", jobName, err)
+			return err
+		}
+
+		hasOutput := false
+		existing := make(map[int]struct{})
+
+		for _, f := range files {
+			name := f.Name()
+
+			if name == "output.json" {
+				log.Printf("job %s already completed (output.json exists)", jobName)
+				hasOutput = true
+				break
+			}
+
+			if name == "plan.json" {
+				continue
+			}
+
+			if strings.HasSuffix(name, ".json") {
+				base := strings.TrimSuffix(name, ".json")
+				i, err := strconv.Atoi(base)
+				if err == nil {
+					existing[i] = struct{}{}
+					log.Printf("job %s: found completed chunk %d", jobName, i)
+				}
+			}
+		}
+
+		if hasOutput {
+			continue
+		}
+
+		log.Printf("job %s incomplete, reconstructing...", jobName)
+
+		planBytes, err := fs.ReadFile(fsys, path.Join(jobName, "plan.json"))
+		if err != nil {
+			log.Printf("failed reading plan.json for job %s: %v", jobName, err)
+			return err
+		}
+
+		execBytes, err := fs.ReadFile(fsys, path.Join(jobName, "map.wasm"))
+		if err != nil {
+			log.Printf("failed reading map.wasm for job %s: %v", jobName, err)
+			return err
+		}
+		mergeBytes, err := fs.ReadFile(fsys, path.Join(jobName, "reduce.wasm"))
+		if err != nil {
+			log.Printf("failed reading reduce.wasm for job %s: %v", jobName, err)
+			return err
+		}
+
+		var executionPlan ExecutionPlan
+		if err := json.Unmarshal(planBytes, &executionPlan); err != nil {
+			log.Printf("failed unmarshaling plan for job %s: %v", jobName, err)
+			return err
+		}
+
+		log.Printf("job %s plan loaded: %d total tasks", jobName, executionPlan.Total)
+
+		jd := JobDescription{
+			ID:           jobID,
+			Name:         executionPlan.Name,
+			TasksTotal:   executionPlan.Total,
+			TasksDone:    len(existing),
+			Binary:       execBytes,
+			MergerBinary: mergeBytes,
+		}
+
+		var tasks []*TaskDescription
+
+		for i, t := range executionPlan.Tasks {
+			if _, done := existing[i]; done {
+				continue
+			}
+
+			stdinBytes, err := base64.StdEncoding.DecodeString(t.Stdin)
+			if err != nil {
+				log.Printf("failed decoding stdin for job %s task %d: %v", jobName, i, err)
+				return err
+			}
+
+			taskID := kademliadfs.NewRandomId()
+
+			td := &TaskDescription{
+				ID:      taskID,
+				JobID:   jobID,
+				Name:    fmt.Sprintf("%v-%v", executionPlan.Name, t.ID),
+				Stdin:   stdinBytes,
+				ChunkID: t.ID,
+			}
+
+			log.Printf("job %s: recreating task %d -> new taskID %x", jobName, i, taskID)
+
+			tasks = append(tasks, td)
+		}
+
+		if len(tasks) > 0 {
+			log.Printf("job %s: submitting %d reconstructed tasks to event loop", jobName, len(tasks))
+			s.events <- EventJobSubmitted{
+				job:   jd,
+				tasks: tasks,
+			}
+		} else {
+			log.Printf("job %s: nothing to reconstruct, all tasks are done, executing merger", jobName)
+			s.events <- EventJobSubmitted{job: jd}
+			s.events <- EventJobDone{jobID: jobID}
+		}
+	}
+
+	log.Printf("scheduler reload complete")
 	return nil
 }

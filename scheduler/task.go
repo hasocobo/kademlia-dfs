@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
 	"time"
 
 	kademliadfs "github.com/hasocobo/kademlia-dfs/kademlia"
@@ -75,7 +76,10 @@ func (th TaskHandler) HandleMessage(ctx context.Context, message []byte) ([]byte
 }
 
 func (s *Scheduler) markTaskDispatched(taskID TaskID) error {
-	task := s.mustTask(taskID)
+	task, ok := s.Tasks[taskID]
+	if !ok {
+		return fmt.Errorf("markTaskDispatched: task %v not found", taskID)
+	}
 
 	if task.TaskState == StateRunning {
 		return nil
@@ -96,8 +100,10 @@ func (s *Scheduler) markTaskDispatched(taskID TaskID) error {
 }
 
 func (s *Scheduler) markTaskDone(taskID TaskID, result []byte) error {
-	task := s.mustTask(taskID)
-
+	task, ok := s.Tasks[taskID]
+	if !ok {
+		return fmt.Errorf("markTaskDone: task %v not found", taskID)
+	}
 	if task.TaskState == StateDone {
 		return nil
 	}
@@ -139,7 +145,10 @@ func (s *Scheduler) markTaskDone(taskID TaskID, result []byte) error {
 }
 
 func (s *Scheduler) markJobDone(jobID JobID) error {
-	job := s.mustJob(jobID)
+	job, ok := s.Jobs[jobID]
+	if !ok {
+		return fmt.Errorf("markJobDone: job %v not found", jobID)
+	}
 	jobPath := jobDirPath + "/" + jobID.String()
 
 	if err := os.MkdirAll(jobPath, 0o755); err != nil {
@@ -158,11 +167,14 @@ func (s *Scheduler) markJobDone(jobID JobID) error {
 		if ent.IsDir() {
 			continue
 		}
-		if ent.Name() == "plan.json" {
+
+		name := ent.Name()
+		log.Println(name)
+		if name == "plan.json" || filepath.Ext(name) == ".wasm" {
 			continue
 		}
 
-		filePath := jobPath + "/" + ent.Name()
+		filePath := jobPath + "/" + name
 		b, err := os.ReadFile(filePath)
 		if err != nil {
 			log.Printf("error: failed to read file %s for job %s: %v", filePath, jobID.String(), err)
@@ -184,6 +196,7 @@ func (s *Scheduler) markJobDone(jobID JobID) error {
 		}
 	}
 
+	log.Printf("job %s: reducer input size = %d", jobID.String(), ndjson.Len())
 	res, err := s.planner.RunTask(context.TODO(), job.MergerBinary, ndjson.Bytes())
 	if err != nil {
 		log.Printf("error: running reducer wasm failed for job %s (%s): %v", jobID.String(), job.Name, err)
@@ -202,7 +215,10 @@ func (s *Scheduler) markJobDone(jobID JobID) error {
 }
 
 func (s *Scheduler) markTaskDispatchFailed(taskID TaskID) error {
-	task := s.mustTask(taskID)
+	task, ok := s.Tasks[taskID]
+	if !ok {
+		return fmt.Errorf("markTaskDispatchFailed: task %v not found", taskID)
+	}
 
 	if task.TaskState == StatePending {
 		return nil
@@ -225,7 +241,10 @@ func (s *Scheduler) markTaskDispatchFailed(taskID TaskID) error {
 }
 
 func (s *Scheduler) enqueueTask(taskID TaskID) error {
-	task := s.mustTask(taskID)
+	task, ok := s.Tasks[taskID]
+	if !ok {
+		return fmt.Errorf("enqueueTask: task %v not found", taskID)
+	}
 
 	if task.Queued {
 		return nil
@@ -246,7 +265,10 @@ func (s *Scheduler) enqueueTask(taskID TaskID) error {
 
 		if len(s.pendingLeaseRequests) > 0 {
 			log.Printf("enqueueTask: serving %v pending requests first", len(s.pendingLeaseRequests))
-			job := s.mustJob(task.JobID)
+			job, ok := s.Jobs[task.JobID]
+			if !ok {
+				return fmt.Errorf("enqueueTask: job %v not found", task.JobID)
+			}
 
 			for len(s.pendingLeaseRequests) > 0 {
 				pendingLease := s.pendingLeaseRequests[0]
@@ -279,22 +301,6 @@ func (s *Scheduler) enqueueTask(taskID TaskID) error {
 		s.stats.IncEnqueued()
 	}
 	return nil
-}
-
-func (s *Scheduler) mustTask(taskID TaskID) *TaskDescription {
-	task, exists := s.Tasks[taskID]
-	if !exists {
-		panic(fmt.Sprintf("task: %v not found", taskID))
-	}
-	return task
-}
-
-func (s *Scheduler) mustJob(jobID JobID) *JobDescription {
-	job, exists := s.Jobs[jobID]
-	if !exists {
-		panic(fmt.Sprintf("job: %v not found", jobID))
-	}
-	return job
 }
 
 // calculateBackoffUntil calculates the time for the task to wait before getting rescheduled

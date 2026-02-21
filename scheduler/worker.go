@@ -57,6 +57,10 @@ func (w *Worker) execTask(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case task := <-w.execQueue:
+			if len(task.Binary) == 0 {
+				log.Println("execTask: task binary is empty")
+				return
+			}
 			result, err := w.exec.RunTask(ctx, task.Binary, task.Stdin)
 			if err != nil {
 				log.Printf("execTask: error: %v", err)
