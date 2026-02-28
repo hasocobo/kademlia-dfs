@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"strings"
 	"sync"
 	"time"
 
@@ -284,9 +285,9 @@ const (
 	FindValueResponse
 	StoreRequest
 	StoreResponse
-	TaskLeaseRequest
-	TaskLeaseResponse
-	TaskExecutionResponse
+	LeaseRequest
+	LeaseResponse
+	ExecutionResponse
 )
 
 func (network *UDPNetwork) SetDHTHandler(dhtHandler DHTHandler) {
@@ -679,12 +680,13 @@ func formatContacts(contacts []Contact) string {
 	if len(contacts) == 0 {
 		return "[]"
 	}
-	result := "["
+	var result strings.Builder
+	result.WriteString("[")
 	for i, c := range contacts {
 		if i > 0 {
-			result += ", "
+			result.WriteString(", ")
 		}
-		result += truncateID(c.ID)
+		result.WriteString(truncateID(c.ID))
 	}
-	return result + "]"
+	return result.String() + "]"
 }

@@ -3,21 +3,23 @@ package runtime
 import (
 	"bytes"
 	"context"
-	_ "embed"
+	"os"
 	"testing"
 
 	"github.com/tetratelabs/wazero"
 	"github.com/tetratelabs/wazero/imports/wasi_snapshot_preview1"
 )
 
-//go:embed ../.binaries/example.txt
-var stdin []byte
-
-//go:embed ../.binaries/map.wasm
-var wasmBin []byte
-
 func TestWasm(t *testing.T) {
 	ctx := context.Background()
+	stdin, err := os.ReadFile("../.binaries/example.txt")
+	if err != nil {
+		t.Fatalf("failed reading test stdin: %v", err)
+	}
+	wasmBin, err := os.ReadFile("../.binaries/map.wasm")
+	if err != nil {
+		t.Fatalf("failed reading test wasm: %v", err)
+	}
 
 	r := wazero.NewRuntime(ctx)
 	defer r.Close(ctx)

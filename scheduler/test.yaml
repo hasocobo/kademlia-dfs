@@ -1,10 +1,5 @@
-name: count-words
-
-tasks:
-  split:
-    input: "../.binaries/example.txt"
-    run: "../.binaries/plan.wasm"
-  execute:
-    run: "../.binaries/map.wasm"
-  merge:
-    run: "../.binaries/reduce.wasm"
+name: uav_inference
+target_tags: [uav]
+binary: "../.binaries/telemetry.wasm"
+type: stream
+topic: system_telemetry

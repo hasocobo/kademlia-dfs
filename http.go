@@ -7,28 +7,22 @@ import (
 	"net/http"
 	"strconv"
 
-	kademliadfs "github.com/hasocobo/kademlia-dfs/kademlia"
 	"github.com/hasocobo/kademlia-dfs/scheduler"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 type Server struct {
-	storedBinaries map[string][]byte
-	scheduler      *scheduler.Scheduler
-	httpPort       int
-	jobParser      scheduler.JobParser
-	reg            *prometheus.Registry
+	scheduler *scheduler.Scheduler
+	httpPort  int
+	jobParser scheduler.JobParser
+	reg       *prometheus.Registry
 }
 
 func NewServer(scheduler *scheduler.Scheduler, httpPort int,
 	jobParser scheduler.JobParser, reg *prometheus.Registry,
 ) *Server {
 	return &Server{
-		storedBinaries: map[string][]byte{
-			"add":      wasmAdd,
-			"subtract": wasmSubtract,
-		},
 		httpPort:  httpPort,
 		scheduler: scheduler,
 		jobParser: jobParser,
@@ -99,38 +93,9 @@ func (s *Server) handleJob() http.HandlerFunc {
 	}
 }
 
-func (s *Server) handleWasm() http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-
-		binaryName := r.PathValue("binaryName")
-		log.Printf("sending task to other nodes: %v\n", r.URL)
-
-		binary, exists := s.storedBinaries[binaryName]
-		if !exists {
-			http.Error(w, "binary not found", http.StatusNotFound)
-			return
-		}
-
-		job := scheduler.JobDescription{
-			ID:         scheduler.JobID(kademliadfs.NewRandomId()),
-			Name:       binaryName,
-			Binary:     binary,
-			TasksTotal: 300,
-		}
-		_ = job
-		// s.scheduler.RegisterJob(job)
-		w.WriteHeader(http.StatusOK)
-	}
-}
-
 func (s *Server) ServeHTTP(ctx context.Context) error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/kv", s.handleKV(ctx))
-	mux.HandleFunc("/wasm/{binaryName}", s.handleWasm())
 	mux.HandleFunc("/jobs", s.handleJob())
 
 	mux.Handle("/metrics", promhttp.HandlerFor(s.reg, promhttp.HandlerOpts{}))

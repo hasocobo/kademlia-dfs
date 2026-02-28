@@ -2,8 +2,10 @@ package kademliadfs
 
 import (
 	"context"
+	"fmt"
 	"math/rand/v2"
 	"net"
+	"strings"
 	"testing"
 )
 
@@ -66,8 +68,9 @@ func TestIntegration_NodesJoinAndStoreKVPAirUDP(t *testing.T) {
 	if err != nil {
 		t.Fatalf("error getting value: %v", err)
 	}
-	if string(retrievedValue) != value {
-		t.Fatalf("expected value %s, got %s", value, string(retrievedValue))
+	expectedEntry := fmt.Sprintf("%s:%s", nodeToPut.Self.ID.String(), value)
+	if !strings.Contains(string(retrievedValue), expectedEntry) {
+		t.Fatalf("expected value to include %s, got %s", expectedEntry, string(retrievedValue))
 	}
 }
 

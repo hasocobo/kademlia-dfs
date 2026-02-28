@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"sort"
+	"strings"
 	"sync"
 )
 
@@ -49,7 +51,7 @@ func NewRandomId() NodeId {
 	_, err := rand.Read(randomID[:]) // This fills randomId variable with random bytes
 	if err != nil {
 		// TODO: add error returns
-		fmt.Sprintf("failed to generate random NodeId: %v", err)
+		log.Printf("failed to generate random NodeId: %v", err)
 	}
 	return randomID
 }
@@ -102,7 +104,12 @@ func (node *Node) HandleStore(ctx context.Context, requester Contact, key NodeId
 	node.mu.Lock()
 	defer node.mu.Unlock()
 
-	node.Storage[key] = value
+	log.Printf("HandleStore: key=%s requester=%s incoming=%q", truncateID(key), truncateID(requester.ID), string(value))
+	existing := parseTopicValue(node.Storage[key])
+	incoming := parseTopicValue(value)
+	mergeTopicValue(existing, incoming)
+	node.Storage[key] = formatTopicValue(existing)
+	log.Printf("HandleStore: key=%s merged_value=%q", truncateID(key), string(node.Storage[key]))
 }
 
 func (node *Node) Lookup(ctx context.Context, targetID NodeId) []Contact {
@@ -316,14 +323,92 @@ func (node *Node) Get(ctx context.Context, key string) ([]byte, error) {
 
 func (node *Node) Put(ctx context.Context, key string, value []byte) error {
 	hashedKey := sha256.Sum256([]byte(key))
+	// prepends nodeId. nodeId: hash1, hash2, hash3
+	payload := fmt.Appendf(nil, "%s:%s", node.Self.ID.String(), string(value))
 	closestContacts := node.Lookup(ctx, hashedKey)
+	log.Printf("Put: topic=%q key=%s payload=%q closest_contacts=%d", key, truncateID(hashedKey), string(payload), len(closestContacts))
 
 	if len(closestContacts) == 0 {
 		return fmt.Errorf("error finding closest nodes for put: length is equal to 0")
 	}
 
 	for _, contact := range closestContacts {
-		node.Network.Store(ctx, node.Self, contact, hashedKey, value)
+		if err := node.Network.Store(ctx, node.Self, contact, hashedKey, payload); err != nil {
+			log.Printf("Put: failed storing topic payload on %s: %v", contact.ID.String(), err)
+		}
 	}
 	return nil
+}
+
+// <nodeID1>:<hash1>,<hash2>;<nodeID2>:<hash3>;
+func parseTopicValue(raw []byte) map[string]map[string]struct{} {
+	result := make(map[string]map[string]struct{})
+	if len(raw) == 0 {
+		return result
+	}
+
+	entries := strings.Split(string(raw), ";")
+	for _, entry := range entries {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			continue
+		}
+		parts := strings.SplitN(entry, ":", 2)
+		if len(parts) != 2 {
+			continue
+		}
+
+		nodeID := strings.TrimSpace(parts[0])
+		if nodeID == "" {
+			continue
+		}
+		if _, ok := result[nodeID]; !ok {
+			result[nodeID] = make(map[string]struct{})
+		}
+
+		for hash := range strings.SplitSeq(parts[1], ",") {
+			hash = strings.TrimSpace(hash)
+			if hash == "" {
+				continue
+			}
+			result[nodeID][hash] = struct{}{}
+		}
+	}
+	return result
+}
+
+func mergeTopicValue(dst map[string]map[string]struct{}, src map[string]map[string]struct{}) {
+	for nodeID, hashes := range src {
+		if _, exists := dst[nodeID]; !exists {
+			dst[nodeID] = make(map[string]struct{})
+		}
+		for hash := range hashes {
+			dst[nodeID][hash] = struct{}{}
+		}
+	}
+}
+
+func formatTopicValue(values map[string]map[string]struct{}) []byte {
+	if len(values) == 0 {
+		return nil
+	}
+
+	nodeIDs := make([]string, 0, len(values))
+	for nodeID := range values {
+		nodeIDs = append(nodeIDs, nodeID)
+	}
+	sort.Strings(nodeIDs)
+
+	entries := make([]string, 0, len(nodeIDs))
+	for _, nodeID := range nodeIDs {
+		hashSet := values[nodeID]
+		hashes := make([]string, 0, len(hashSet))
+		for hash := range hashSet {
+			hashes = append(hashes, hash)
+		}
+		sort.Strings(hashes)
+		entries = append(entries, nodeID+":"+strings.Join(hashes, ","))
+	}
+
+	return []byte(strings.Join(entries, ";"))
 }

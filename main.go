@@ -11,6 +11,7 @@ import (
 	_ "net/http/pprof"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	kademliadfs "github.com/hasocobo/kademlia-dfs/kademlia"
@@ -19,18 +20,17 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 )
 
-//go:embed .binaries/add.wasm
-var wasmAdd []byte
-
-//go:embed .binaries/subtract.wasm
-var wasmSubtract []byte
-
 type Config struct {
 	IP            net.IP
 	Port          int
 	BootstrapIP   net.IP
 	BootstrapPort int
 	IsBootstrap   bool
+
+	MountDir string
+
+	Tags               []string
+	DeviceCapabilities []string
 }
 
 func main() {
@@ -71,7 +71,11 @@ func run(ctx context.Context, cfg Config) error {
 	//		log.Print(err)
 	//	}
 
-	taskRuntime := runtime.WasmRuntime{}
+	taskRuntime := runtime.NewWasmRuntime(runtime.WasmConfig{
+		MountDir:           cfg.MountDir,
+		Tags:               cfg.Tags,
+		DeviceCapabilities: cfg.DeviceCapabilities,
+	})
 
 	var node *kademliadfs.Node
 	if quicNetwork.PublicAddr != nil {
@@ -97,7 +101,8 @@ func run(ctx context.Context, cfg Config) error {
 	reg := prometheus.NewRegistry()
 	prometheusStats := scheduler.NewPrometheusStats(reg)
 	sched := scheduler.NewScheduler(node, taskRuntime, quicNetwork, prometheusStats)
-	worker := scheduler.NewWorker(taskRuntime, quicNetwork)
+	worker := scheduler.NewWorker(taskRuntime, quicNetwork, cfg.MountDir, cfg.DeviceCapabilities, cfg.Tags)
+	worker.RegisterTopicPublisher(node)
 	taskHandler := scheduler.NewTaskHandler(sched, worker)
 
 	quicNetwork.SetDHTHandler(node)
@@ -148,10 +153,31 @@ func run(ctx context.Context, cfg Config) error {
 func parseFlags() Config {
 	ipPtr := flag.String("ip", "0.0.0.0", "usage: -ip=0.0.0.0")
 	portPtr := flag.Int("port", 9999, "-port=9999")
-	bootstrapNodeIpPtr := flag.String("bootstrap-ip", "0.0.0.0", "usage: -ip=0.0.0.0")
+	bootstrapNodeIpPtr := flag.String("bootstrap-ip", "0.0.0.0", "usage: -bootstrap-ip=0.0.0.0")
 	bootstrapNodePortPtr := flag.Int("bootstrap-port", 9000, "-bootstrap-port=9000")
 	isBootstrapNodePtr := flag.Bool("is-bootstrap", false, "is-bootstrap=false")
+
+	tagsPtr := flag.String("tags", "", "comma separated tags: -tags=cctv_camera,thermostat")
+	deviceCapsPtr := flag.String("device-capabilities", "", "comma separated capabilities")
+	mountDirPtr := flag.String("mountdir", "", "mount directory for task runtime")
+
 	flag.Parse()
 
-	return Config{net.ParseIP(*ipPtr), *portPtr, net.ParseIP(*bootstrapNodeIpPtr), *bootstrapNodePortPtr, *isBootstrapNodePtr}
+	return Config{
+		IP:                 net.ParseIP(*ipPtr),
+		Port:               *portPtr,
+		BootstrapIP:        net.ParseIP(*bootstrapNodeIpPtr),
+		BootstrapPort:      *bootstrapNodePortPtr,
+		IsBootstrap:        *isBootstrapNodePtr,
+		Tags:               splitComma(*tagsPtr),
+		DeviceCapabilities: splitComma(*deviceCapsPtr),
+		MountDir:           *mountDirPtr,
+	}
+}
+
+func splitComma(s string) []string {
+	if s == "" {
+		return nil
+	}
+	return strings.Split(s, ",")
 }

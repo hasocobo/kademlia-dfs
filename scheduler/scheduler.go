@@ -34,12 +34,12 @@ type Scheduler struct {
 	leaseResponse        chan leaseResponse
 	pendingLeaseRequests []leaseRequest // list of chans of leaseRespons to send the task. used for long polling
 
-	readyTaskQueue chan TaskID
+	batchTasks  chan TaskID
+	streamTasks map[JobID]*JobDescription // stream tasks are long running tasks and should not be drained from a queue
 
 	Node *kademliadfs.Node
 
-	stats Stats
-
+	stats       Stats
 	planner     runtime.TaskRuntime // only for planning, actual execution is in the worker package
 	taskNetwork runtime.TaskNetwork
 }
@@ -47,6 +47,7 @@ type Scheduler struct {
 type leaseRequest struct {
 	ctx          context.Context
 	responseChan chan leaseResponse
+	request      runtime.Task
 }
 
 type leaseResponse struct {
@@ -70,14 +71,15 @@ func NewScheduler(node *kademliadfs.Node, planner runtime.TaskRuntime,
 	taskNetwork runtime.TaskNetwork, stats Stats,
 ) *Scheduler {
 	return &Scheduler{
-		Jobs:           make(map[JobID]*JobDescription),
-		Tasks:          make(map[TaskID]*TaskDescription),
-		events:         make(chan Event, eventLoopBufferSize),
-		readyTaskQueue: make(chan TaskID, taskQueueSize),
-		Node:           node,
-		stats:          stats,
-		taskNetwork:    taskNetwork,
-		planner:        planner,
+		Jobs:        make(map[JobID]*JobDescription),
+		Tasks:       make(map[TaskID]*TaskDescription),
+		events:      make(chan Event, eventLoopBufferSize),
+		batchTasks:  make(chan TaskID, taskQueueSize),
+		streamTasks: make(map[JobID]*JobDescription),
+		Node:        node,
+		stats:       stats,
+		taskNetwork: taskNetwork,
+		planner:     planner,
 	}
 }
 
@@ -160,14 +162,14 @@ func (s *Scheduler) handleEvent(ctx context.Context, event Event) error {
 
 	case EventLeaseRequest:
 		select {
-		case taskID := <-s.readyTaskQueue:
-			task, ok := s.Tasks[taskID]
-			if !ok {
+		case taskID := <-s.batchTasks:
+			task, exists := s.Tasks[taskID]
+			if !exists {
 				e.request.responseChan <- leaseResponse{nil, fmt.Errorf("task %v not found", taskID)}
 				break
 			}
-			job, ok := s.Jobs[task.JobID]
-			if !ok {
+			job, exists := s.Jobs[task.JobID]
+			if !exists {
 				e.request.responseChan <- leaseResponse{nil, fmt.Errorf("job %v not found", task.JobID)}
 				break
 			}
@@ -175,8 +177,11 @@ func (s *Scheduler) handleEvent(ctx context.Context, event Event) error {
 			s.markTaskDispatched(taskID)
 
 			responseTask := runtime.Task{
-				OpCode: kademliadfs.TaskLeaseResponse,
+				OpCode: kademliadfs.LeaseResponse,
 				TaskID: taskID,
+				JobID:  task.JobID,
+				Type:   task.Type,
+				Topic:  task.Topic,
 				Binary: job.Binary,
 				Stdin:  task.Stdin,
 			}
@@ -185,11 +190,39 @@ func (s *Scheduler) handleEvent(ctx context.Context, event Event) error {
 			e.request.responseChan <- leaseResponse{payload, err}
 
 		default:
-			log.Printf("no task available, adding the request to the pending requests list")
-			s.pendingLeaseRequests = append(s.pendingLeaseRequests, leaseRequest{
-				responseChan: e.request.responseChan,
-				ctx:          e.request.ctx,
-			})
+			if e.request.request.RequestMode == runtime.RequestModeNeedBatch {
+				log.Printf("no task available, adding the request to the pending requests list")
+				s.pendingLeaseRequests = append(s.pendingLeaseRequests, leaseRequest{
+					responseChan: e.request.responseChan,
+					ctx:          e.request.ctx,
+					request:      e.request.request,
+				})
+				break
+			}
+			for _, desc := range s.streamTasks {
+				set := make(map[string]struct{}, len(e.request.request.Tags))
+				for _, v := range e.request.request.Tags {
+					set[v] = struct{}{}
+				}
+
+				for _, tag := range desc.TargetTags {
+					if _, ok := set[tag]; ok {
+						responseTask := runtime.Task{
+							OpCode: kademliadfs.LeaseResponse,
+							JobID:  desc.ID,
+							Type:   runtime.TaskTypeStream,
+							Topic:  desc.Topic,
+							Binary: desc.Binary,
+						}
+						payload, err := runtime.EncodeTask(responseTask)
+						if err != nil {
+							return err
+						}
+						e.request.responseChan <- leaseResponse{payload, err}
+						return nil
+					}
+				}
+			}
 		}
 	case EventJobSubmitted:
 		job := e.job
@@ -200,17 +233,26 @@ func (s *Scheduler) handleEvent(ctx context.Context, event Event) error {
 
 		s.Jobs[job.ID] = &job
 
-		for _, task := range e.tasks {
-			if ctx.Err() != nil {
-				break
+		switch job.Type {
+		case TypeStream:
+			s.streamTasks[job.ID] = &job
+			log.Println("job registered successfully")
+
+		case TypeBatch:
+			for _, task := range e.tasks {
+				if ctx.Err() != nil {
+					break
+				}
+				s.Tasks[task.ID] = task
+				if err := s.enqueueTask(task.ID); err != nil {
+					log.Printf("error enqueueing task: %v", err.Error())
+					break
+				}
 			}
-			s.Tasks[task.ID] = task
-			if err := s.enqueueTask(task.ID); err != nil {
-				log.Printf("error enqueueing task: %v", err.Error())
-				break
-			}
+			return nil
+		default:
+			return fmt.Errorf("unsupported job type: %v", job.Type)
 		}
-		return nil
 
 	case EventJobDone:
 		err := s.markJobDone(e.jobID)
@@ -235,10 +277,10 @@ func (s *Scheduler) handleEvent(ctx context.Context, event Event) error {
 	return nil
 }
 
-func (s *Scheduler) HandleTaskLeaseRequest(ctx context.Context) ([]byte, error) {
+func (s *Scheduler) HandleTaskLeaseRequest(ctx context.Context, task runtime.Task) ([]byte, error) {
 	responseChan := make(chan leaseResponse, 1)
 	s.events <- EventLeaseRequest{
-		leaseRequest{responseChan: responseChan, ctx: ctx},
+		leaseRequest{responseChan: responseChan, ctx: ctx, request: task},
 	}
 
 	select {
@@ -256,22 +298,41 @@ func (s *Scheduler) HandleTaskLeaseRequest(ctx context.Context) ([]byte, error) 
 
 func (s *Scheduler) RegisterJob(job JobSpec) error {
 	jobID := kademliadfs.NewRandomId()
+	log.Println(job.TargetTags)
 	var executionPlan ExecutionPlan
 	var jd JobDescription
 
 	var tasks []*TaskDescription
 
+	if job.Type == TypeStream {
+		if job.Binary == "" {
+			return fmt.Errorf("stream job requires binary")
+		}
+		binary, err := os.ReadFile(job.Binary)
+		if err != nil {
+			log.Printf("error reading stream binary: %v", err)
+			return err
+		}
+
+		jd = JobDescription{
+			ID:         jobID,
+			Name:       job.Name,
+			Binary:     binary,
+			TasksTotal: 1,
+			Type:       job.Type,
+			Topic:      job.Topic,
+			TargetTags: job.TargetTags,
+		}
+		s.events <- EventJobSubmitted{job: jd}
+		return nil
+	}
+
 	for name, taskSpec := range job.Tasks {
 		switch name {
 		case "split":
+
 			if err := os.MkdirAll(jobDirPath+"/"+jobID.String(), 0o755); err != nil {
 				log.Printf("error creating job dir: %v", err)
-				return err
-			}
-
-			inputFile, err := os.ReadFile(taskSpec.Input)
-			if err != nil {
-				log.Printf("error reading file: %v", err)
 				return err
 			}
 
@@ -287,7 +348,7 @@ func (s *Scheduler) RegisterJob(job JobSpec) error {
 				return writeErr
 			}
 
-			plan, err := s.planner.RunTask(context.TODO(), binary, inputFile)
+			plan, err := s.planner.RunTask(context.TODO(), binary, nil, nil)
 			if err != nil {
 				log.Printf("error running planner wasm: %v", err)
 				return err
@@ -335,9 +396,15 @@ func (s *Scheduler) RegisterJob(job JobSpec) error {
 				Name:       executionPlan.Name,
 				Binary:     binary,
 				TasksTotal: executionPlan.Total,
+				Type:       TypeBatch,
+				Topic:      job.Topic,
 			}
 
 			tasks = make([]*TaskDescription, executionPlan.Total)
+			taskType := taskSpec.Type
+			if taskType == "" {
+				taskType = runtime.TaskTypeBatch
+			}
 
 			for i, t := range executionPlan.Tasks {
 				log.Println(t)
@@ -350,6 +417,8 @@ func (s *Scheduler) RegisterJob(job JobSpec) error {
 					ID:    kademliadfs.NewRandomId(),
 					JobID: jobID,
 					Name:  fmt.Sprintf("%v-%v", executionPlan.Name, t.ID),
+					Topic: job.Topic,
+					Type:  taskType,
 
 					Stdin:   stdinBytes,
 					ChunkID: t.ID,
@@ -478,6 +547,7 @@ func (s *Scheduler) reloadMemoryOnStartup(ctx context.Context, fsys fs.FS) error
 			TasksDone:    len(existing),
 			Binary:       execBytes,
 			MergerBinary: mergeBytes,
+			Type:         TypeBatch,
 		}
 
 		var tasks []*TaskDescription
@@ -499,6 +569,7 @@ func (s *Scheduler) reloadMemoryOnStartup(ctx context.Context, fsys fs.FS) error
 				ID:      taskID,
 				JobID:   jobID,
 				Name:    fmt.Sprintf("%v-%v", executionPlan.Name, t.ID),
+				Type:    runtime.TaskTypeBatch,
 				Stdin:   stdinBytes,
 				ChunkID: t.ID,
 			}

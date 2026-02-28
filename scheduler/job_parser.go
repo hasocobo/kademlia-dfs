@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/goccy/go-yaml"
+	"github.com/hasocobo/kademlia-dfs/runtime"
 )
 
 type JobDescription struct {
@@ -20,6 +21,10 @@ type JobDescription struct {
 	InputFile  []byte
 	TasksDone  int
 	TasksTotal int // TODO: replace this part with a job description language like GDL
+
+	Type       JobType
+	Topic      string
+	TargetTags []string
 }
 
 type JobParser interface {
@@ -27,13 +32,25 @@ type JobParser interface {
 }
 
 type JobSpec struct {
-	Name  string              `yaml:"name"`
-	Tasks map[string]TaskSpec `yaml:"tasks"`
+	Name       string              `yaml:"name"`
+	Type       JobType             `yaml:"type"`
+	Topic      string              `yaml:"topic"`
+	TargetTags []string            `yaml:"target_tags"`
+	Binary     string              `yaml:"binary"`
+	Tasks      map[string]TaskSpec `yaml:"tasks"`
 }
 
+type JobType string
+
+const (
+	TypeBatch  JobType = "batch"
+	TypeStream JobType = "stream"
+)
+
 type TaskSpec struct { // TODO: make this an interface
-	Input string `yaml:"input, omitempty"`
-	Run   string `yaml:"run"`
+	Input string           `yaml:"input, omitempty"`
+	Run   string           `yaml:"run"`
+	Type  runtime.TaskType `yaml:"type,omitempty"`
 }
 
 type ExecutionPlan struct {
@@ -63,6 +80,9 @@ func (js JobSpec) String() string {
 
 	var b strings.Builder
 	fmt.Fprintf(&b, "job: %s\n", name)
+	if js.Binary != "" {
+		fmt.Fprintf(&b, "binary: %s\n", js.Binary)
+	}
 	fmt.Fprintf(&b, "tasks: %d\n", len(taskNames))
 	for _, n := range taskNames {
 		t := js.Tasks[n]

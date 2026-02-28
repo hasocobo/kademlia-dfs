@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"math/rand/v2"
 	"os"
 	"path/filepath"
 	"time"
@@ -21,6 +22,8 @@ type TaskDescription struct {
 	ID        TaskID
 	JobID     JobID
 	Name      string
+	Topic     string
+	Type      runtime.TaskType
 	TaskState TaskState
 
 	Binary   []byte
@@ -60,15 +63,15 @@ func (th TaskHandler) HandleMessage(ctx context.Context, message []byte) ([]byte
 	log.Printf("HandleMessage: got a request of type: %v", task.OpCode)
 
 	switch task.OpCode {
-	case kademliadfs.TaskExecutionResponse:
+	case kademliadfs.ExecutionResponse:
 		th.scheduler.events <- EventTaskDone{taskID: task.TaskID, result: task.Result}
 		return nil, nil
 
-	case kademliadfs.TaskLeaseRequest:
+	case kademliadfs.LeaseRequest:
 		ctx, cancel := context.WithTimeout(ctx, time.Second*taskTimeoutSeconds)
 		defer cancel()
 
-		return th.scheduler.HandleTaskLeaseRequest(ctx)
+		return th.scheduler.HandleTaskLeaseRequest(ctx, task)
 
 	default:
 		return nil, fmt.Errorf("unknown message type")
@@ -197,7 +200,7 @@ func (s *Scheduler) markJobDone(jobID JobID) error {
 	}
 
 	log.Printf("job %s: reducer input size = %d", jobID.String(), ndjson.Len())
-	res, err := s.planner.RunTask(context.TODO(), job.MergerBinary, ndjson.Bytes())
+	res, err := s.planner.RunTask(context.TODO(), job.MergerBinary, ndjson.Bytes(), nil)
 	if err != nil {
 		log.Printf("error: running reducer wasm failed for job %s (%s): %v", jobID.String(), job.Name, err)
 		return err
@@ -282,8 +285,11 @@ func (s *Scheduler) enqueueTask(taskID TaskID) error {
 				s.markTaskDispatched(task.ID)
 
 				responseTask := runtime.Task{
-					OpCode: kademliadfs.TaskLeaseResponse,
+					OpCode: kademliadfs.LeaseResponse,
 					TaskID: taskID,
+					JobID:  task.JobID,
+					Type:   task.Type,
+					Topic:  task.Topic,
 					Binary: job.Binary,
 					Stdin:  task.Stdin,
 				}
@@ -295,7 +301,7 @@ func (s *Scheduler) enqueueTask(taskID TaskID) error {
 			}
 		}
 
-		s.readyTaskQueue <- taskID
+		s.batchTasks <- taskID
 
 		task.EnqueuedAt = time.Now()
 		s.stats.IncEnqueued()
@@ -308,16 +314,16 @@ func calculateBackoffUntil(attempt int) time.Duration {
 	const max = 10 * time.Second
 
 	if attempt <= 0 {
-		return 1 * time.Second
+		return time.Second
 	}
 
 	if attempt >= 63 { // avoid overflow
 		return max
 	}
 
-	d := time.Second * time.Duration(1<<uint(attempt))
-	if d > max {
-		return max
-	}
-	return d
+	base := time.Second * time.Duration(1<<uint(attempt))
+	base = min(base, max)
+
+	// jitter: random duration in [0, base)
+	return time.Duration(rand.Int64N(int64(base)))
 }
